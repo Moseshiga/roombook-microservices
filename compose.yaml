@@ -1,0 +1,24 @@
+name: roombook
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: bookings_db
+      POSTGRES_USER: booking
+      POSTGRES_PASSWORD: booking_local
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - booking-postgres-data:/var/lib/postgresql/data
+    mem_limit: 384m
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=30"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking -d bookings_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  booking-postgres-data:
