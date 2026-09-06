@@ -1,5 +1,6 @@
 package dev.roombooking.booking;
 
+import dev.roombooking.booking.reservation.BookingService;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,7 +39,8 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "booking.expiration.cleanup.enabled=false")
 @ActiveProfiles("test")
 @Import(BookingServiceApplicationTests.TimeFixture.class)
 @Testcontainers
@@ -63,6 +65,7 @@ class BookingServiceApplicationTests {
     @Autowired ObjectMapper mapper;
     @Autowired JdbcTemplate jdbc;
     @Autowired DataSource dataSource;
+    @Autowired BookingService bookingService;
 
     @BeforeEach
     void clearTestDatabase() {
@@ -137,6 +140,19 @@ class BookingServiceApplicationTests {
         assertThat(postWithoutBody("/api/bookings/" + id + "/cancel").statusCode()).isEqualTo(409);
         assertThat(jdbc.queryForObject("SELECT status FROM bookings WHERE id = ?", String.class, id))
                 .isEqualTo("PENDING");
+    }
+
+    @Test
+    void cleanupExpiresEveryOverduePendingBookingButLeavesOthersUntouched() {
+        UUID expired = seed("PENDING", NOW.toString());
+        UUID active = seedForRoom(UUID.randomUUID(), "PENDING", "2030-01-01T11:05:00Z");
+        UUID confirmed = seedForRoom(UUID.randomUUID(), "CONFIRMED", NOW.toString());
+
+        assertThat(bookingService.expireOverduePending()).isEqualTo(1);
+        assertThat(statusOf(expired)).isEqualTo("EXPIRED");
+        assertThat(statusOf(active)).isEqualTo("PENDING");
+        assertThat(statusOf(confirmed)).isEqualTo("CONFIRMED");
+        assertThat(bookingService.expireOverduePending()).isZero();
     }
 
     @Test
@@ -270,12 +286,20 @@ class BookingServiceApplicationTests {
     }
 
     private UUID seed(String status, String expiresAt) {
+        return seedForRoom(ROOM, status, expiresAt);
+    }
+
+    private UUID seedForRoom(UUID room, String status, String expiresAt) {
         UUID id = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO bookings (id, room_id, user_id, slot_start, status, created_at, expires_at)
                 VALUES (?, ?, ?, CAST(? AS timestamptz), ?, '2030-01-01T10:45:00Z', CAST(? AS timestamptz))
-                """, id, ROOM, UUID.randomUUID(), SLOT, status, expiresAt);
+                """, id, room, UUID.randomUUID(), SLOT, status, expiresAt);
         return id;
+    }
+
+    private String statusOf(UUID id) {
+        return jdbc.queryForObject("SELECT status FROM bookings WHERE id = ?", String.class, id);
     }
 
     private String body(UUID room, UUID user, String slot) {

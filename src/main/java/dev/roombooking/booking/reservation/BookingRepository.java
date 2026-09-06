@@ -18,6 +18,13 @@ public interface BookingRepository extends JpaRepository<Booking, UUID> {
     int expirePendingSlot(@Param("roomId") UUID roomId, @Param("slotStart") Instant slotStart,
                           @Param("now") Instant now);
 
+    @Modifying
+    @Query(value = """
+            UPDATE bookings SET status = 'EXPIRED'
+            WHERE status = 'PENDING' AND expires_at <= :now
+            """, nativeQuery = true)
+    int expireOverduePending(@Param("now") Instant now);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             UPDATE bookings SET status = 'CONFIRMED'

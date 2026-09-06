@@ -81,10 +81,18 @@ inserts the new booking in one transaction. There is no check-then-insert availa
 query or JVM lock. PostgreSQL arbitrates concurrent inserts. The losing transaction
 rolls back; the exception handler translates only this named index violation to 409.
 
-Time passing alone does not remove a row from the index. A new reservation attempt
-explicitly persists `EXPIRED` for an overdue hold. GET reports the effective EXPIRED
-status without writing to the database, even before this cleanup. No background
-expiration job exists yet. CONFIRMED rows remain active regardless of hold expiry.
+Time passing alone does not remove a row from the index. `ExpiredBookingCleanup` runs
+every minute and persists `EXPIRED` for every overdue `PENDING` hold. A new reservation
+attempt also expires an overdue hold for its requested slot, so it does not need to wait
+for the next scheduled run. GET reports the effective EXPIRED status without writing to
+the database, even before either cleanup runs. CONFIRMED rows remain active regardless
+of hold expiry.
+
+The scheduler is enabled with `booking.expiration.cleanup.enabled=true` and its fixed
+delay is configured by `booking.expiration.cleanup-interval` (`PT1M` by default). The
+task currently runs once in every application instance. This is safe because the update
+is idempotent, but it duplicates database work after horizontal scaling. ShedLock is the
+next step and will coordinate execution across instances.
 
 Expiry uses an injected UTC application clock. Multiple deployed instances require
 synchronized clocks; database-authoritative timing is a topic for the distributed

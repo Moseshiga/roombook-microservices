@@ -67,6 +67,11 @@ public class BookingService {
         throw transitionRejected(id, "cancelled", now);
     }
 
+    @Transactional
+    public int expireOverduePending() {
+        return repository.expireOverduePending(clock.instant().truncatedTo(ChronoUnit.MICROS));
+    }
+
     private Booking requireBooking(UUID id) {
         return repository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found"));
