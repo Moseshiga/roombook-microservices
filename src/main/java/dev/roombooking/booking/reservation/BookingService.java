@@ -45,8 +45,39 @@ public class BookingService {
 
     @Transactional(readOnly = true)
     public BookingResponse get(UUID id) {
-        Booking booking = repository.findById(id)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found"));
+        Booking booking = requireBooking(id);
         return BookingResponse.from(booking, clock.instant());
+    }
+
+    @Transactional
+    public BookingResponse confirm(UUID id) {
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        if (repository.confirmPending(id, now) == 1) {
+            return BookingResponse.from(requireBooking(id), now);
+        }
+        throw transitionRejected(id, "confirmed", now);
+    }
+
+    @Transactional
+    public BookingResponse cancel(UUID id) {
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        if (repository.cancelPending(id, now) == 1) {
+            return BookingResponse.from(requireBooking(id), now);
+        }
+        throw transitionRejected(id, "cancelled", now);
+    }
+
+    private Booking requireBooking(UUID id) {
+        return repository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Booking not found"));
+    }
+
+    private ResponseStatusException transitionRejected(UUID id, String targetState, Instant now) {
+        Booking booking = requireBooking(id);
+        if (booking.getStatus() == BookingStatus.PENDING && !booking.getExpiresAt().isAfter(now)) {
+            return new ResponseStatusException(HttpStatus.CONFLICT, "Booking hold has expired");
+        }
+        return new ResponseStatusException(HttpStatus.CONFLICT,
+                "Booking in state " + booking.getStatus() + " cannot be " + targetState);
     }
 }

@@ -93,6 +93,60 @@ class BookingServiceApplicationTests {
     }
 
     @Test
+    void confirmsPendingBookingAndPreventsLaterCancellation() throws Exception {
+        UUID id = createBooking();
+        var confirmation = postWithoutBody("/api/bookings/" + id + "/confirm");
+        assertThat(confirmation.statusCode()).isEqualTo(200);
+        assertThat(mapper.readTree(confirmation.body()).get("status").asText()).isEqualTo("CONFIRMED");
+        assertThat(postWithoutBody("/api/bookings/" + id + "/cancel").statusCode()).isEqualTo(409);
+        assertThat(mapper.readTree(get("/api/bookings/" + id).body()).get("status").asText())
+                .isEqualTo("CONFIRMED");
+    }
+
+    @Test
+    void cancelsPendingBookingAndReleasesItsSlot() throws Exception {
+        UUID id = createBooking();
+        var cancellation = postWithoutBody("/api/bookings/" + id + "/cancel");
+        assertThat(cancellation.statusCode()).isEqualTo(200);
+        assertThat(mapper.readTree(cancellation.body()).get("status").asText()).isEqualTo("CANCELLED");
+        assertThat(post(body(ROOM, UUID.randomUUID(), SLOT)).statusCode()).isEqualTo(201);
+        assertThat(postWithoutBody("/api/bookings/" + id + "/confirm").statusCode()).isEqualTo(409);
+    }
+
+    @Test
+    void concurrentConfirmationAndCancellationHaveOneWinner() throws Exception {
+        UUID id = createBooking();
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try (var workers = Executors.newFixedThreadPool(2)) {
+            var confirmation = workers.submit(() -> transitionAfterStart(ready, start, id, "confirm"));
+            var cancellation = workers.submit(() -> transitionAfterStart(ready, start, id, "cancel"));
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            assertThat(new Integer[]{confirmation.get(10, TimeUnit.SECONDS), cancellation.get(10, TimeUnit.SECONDS)})
+                    .containsExactlyInAnyOrder(200, 409);
+        }
+        String finalStatus = jdbc.queryForObject("SELECT status FROM bookings WHERE id = ?", String.class, id);
+        assertThat(finalStatus).isIn("CONFIRMED", "CANCELLED");
+    }
+
+    @Test
+    void cannotConfirmOrCancelExpiredHold() throws Exception {
+        UUID id = seed("PENDING", NOW.toString());
+        assertThat(postWithoutBody("/api/bookings/" + id + "/confirm").statusCode()).isEqualTo(409);
+        assertThat(postWithoutBody("/api/bookings/" + id + "/cancel").statusCode()).isEqualTo(409);
+        assertThat(jdbc.queryForObject("SELECT status FROM bookings WHERE id = ?", String.class, id))
+                .isEqualTo("PENDING");
+    }
+
+    @Test
+    void transitionsMissingBookingReturn404() throws Exception {
+        UUID id = UUID.randomUUID();
+        assertThat(postWithoutBody("/api/bookings/" + id + "/confirm").statusCode()).isEqualTo(404);
+        assertThat(postWithoutBody("/api/bookings/" + id + "/cancel").statusCode()).isEqualTo(404);
+    }
+
+    @Test
     void holdNeverExtendsBeyondSlotStart() throws Exception {
         var response = post(body(ROOM, UUID.randomUUID(), "2030-01-01T11:00:00Z"));
         assertThat(response.statusCode()).isEqualTo(201);
@@ -230,6 +284,19 @@ class BookingServiceApplicationTests {
                 """.formatted(room, user, slot);
     }
 
+    private UUID createBooking() throws Exception {
+        var response = post(body(ROOM, UUID.randomUUID(), SLOT));
+        assertThat(response.statusCode()).isEqualTo(201);
+        return UUID.fromString(mapper.readTree(response.body()).get("id").asText());
+    }
+
+    private int transitionAfterStart(CountDownLatch ready, CountDownLatch start, UUID id, String action)
+            throws Exception {
+        ready.countDown();
+        assertThat(start.await(5, TimeUnit.SECONDS)).isTrue();
+        return postWithoutBody("/api/bookings/" + id + "/" + action).statusCode();
+    }
+
     private HttpRequest postRequest(String body) {
         return HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/bookings"))
                 .timeout(Duration.ofSeconds(10)).header("Content-Type", "application/json")
@@ -238,6 +305,12 @@ class BookingServiceApplicationTests {
 
     private HttpResponse<String> post(String body) throws Exception {
         return HTTP.send(postRequest(body), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpResponse<String> postWithoutBody(String path) throws Exception {
+        return HTTP.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                .timeout(Duration.ofSeconds(10)).POST(HttpRequest.BodyPublishers.noBody()).build(),
+                HttpResponse.BodyHandlers.ofString());
     }
 
     private HttpResponse<String> get(String path) throws Exception {

@@ -35,6 +35,8 @@ will need external secrets, restricted database roles and authentication.
 | --- | --- | --- |
 | POST | `/api/bookings` | `201 Created`, reservation JSON and `Location` header |
 | GET | `/api/bookings/{id}` | `200 OK`, reservation JSON; `404` if absent |
+| POST | `/api/bookings/{id}/confirm` | `200 OK` for a non-expired `PENDING` reservation |
+| POST | `/api/bookings/{id}/cancel` | `200 OK` for a non-expired `PENDING` reservation |
 | GET | `/actuator/health` | Application health |
 
 Create and read a reservation for tomorrow at 12:00 UTC:
@@ -60,6 +62,8 @@ offset (`Z` is UTC). Slots start on whole UTC hours and last exactly one hour.
 - Missing/invalid fields, past slots and non-hour-aligned times return `400`.
 - An occupied slot returns `409` with an `application/problem+json` response.
 - A hold lasts ten minutes, capped at the slot start if it is less than ten minutes away.
+- Confirmation and cancellation are competing atomic state transitions. Only an
+  unexpired `PENDING` booking can change; all other states return `409`.
 - Retrying an already successful POST currently returns `409`; idempotency keys are
   a separate future feature. The API does not yet recover a lost successful response.
 
