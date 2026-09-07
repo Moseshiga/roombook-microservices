@@ -1,6 +1,9 @@
 package dev.roombooking.booking;
 
 import dev.roombooking.booking.reservation.BookingService;
+import net.javacrumbs.shedlock.core.LockConfiguration;
+import net.javacrumbs.shedlock.core.LockProvider;
+import net.javacrumbs.shedlock.provider.jdbctemplate.JdbcTemplateLockProvider;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -66,6 +69,7 @@ class BookingServiceApplicationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired DataSource dataSource;
     @Autowired BookingService bookingService;
+    @Autowired LockProvider lockProvider;
 
     @BeforeEach
     void clearTestDatabase() {
@@ -153,6 +157,25 @@ class BookingServiceApplicationTests {
         assertThat(statusOf(active)).isEqualTo("PENDING");
         assertThat(statusOf(confirmed)).isEqualTo("CONFIRMED");
         assertThat(bookingService.expireOverduePending()).isZero();
+    }
+
+    @Test
+    void databaseLockAllowsOnlyOneInstanceToHoldTheSameTaskLock() {
+        String lockName = "test-expire-overdue-bookings";
+        LockConfiguration configuration = new LockConfiguration(
+                Instant.now(), lockName, Duration.ofMinutes(1), Duration.ZERO);
+        var otherInstanceProvider = new JdbcTemplateLockProvider(
+                JdbcTemplateLockProvider.Configuration.builder()
+                        .withJdbcTemplate(new JdbcTemplate(dataSource))
+                        .usingDbTime()
+                        .build());
+
+        var firstLock = lockProvider.lock(configuration);
+        assertThat(firstLock).isPresent();
+        assertThat(otherInstanceProvider.lock(configuration)).isEmpty();
+
+        firstLock.orElseThrow().unlock();
+        assertThat(otherInstanceProvider.lock(configuration)).isPresent();
     }
 
     @Test

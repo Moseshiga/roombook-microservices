@@ -89,10 +89,16 @@ the database, even before either cleanup runs. CONFIRMED rows remain active rega
 of hold expiry.
 
 The scheduler is enabled with `booking.expiration.cleanup.enabled=true` and its fixed
-delay is configured by `booking.expiration.cleanup-interval` (`PT1M` by default). The
-task currently runs once in every application instance. This is safe because the update
-is idempotent, but it duplicates database work after horizontal scaling. ShedLock is the
-next step and will coordinate execution across instances.
+delay is configured by `booking.expiration.cleanup-interval` (`PT1M` by default).
+ShedLock stores a distributed lock in the `shedlock` table, so only one application
+instance can execute this named cleanup task at one time. It uses PostgreSQL time rather
+than an application server clock when deciding whether a lock is valid.
+
+If another instance holds the lock, ShedLock skips this scheduled invocation instead of
+waiting. `lockAtMostFor=PT5M` is a recovery ceiling: it frees the lock if the holder
+crashes. It must remain longer than the worst expected cleanup duration; if it expires
+while a task is still running, two instances could run concurrently. ShedLock is a lock,
+not a durable distributed scheduler, so cleanup remains idempotent.
 
 Expiry uses an injected UTC application clock. Multiple deployed instances require
 synchronized clocks; database-authoritative timing is a topic for the distributed
