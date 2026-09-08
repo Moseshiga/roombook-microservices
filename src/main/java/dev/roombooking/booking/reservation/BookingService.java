@@ -23,7 +23,7 @@ public class BookingService {
     }
 
     @Transactional
-    public BookingResponse create(CreateBookingRequest request) {
+    public BookingResponse create(CreateBookingRequest request, BookingActor actor) {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         if (!request.slotStart().isAfter(now)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "slotStart must be in the future");
@@ -36,7 +36,7 @@ public class BookingService {
             expiresAt = request.slotStart();
         }
         repository.expirePendingSlot(request.roomId(), request.slotStart(), now);
-        Booking booking = new Booking(request.roomId(), request.userId(), request.slotStart(), now, expiresAt);
+        Booking booking = new Booking(request.roomId(), actor.subject(), request.slotStart(), now, expiresAt);
         // The unique index decides the winner even when requests reach different instances.
         // Flush here so a conflict leaves this transaction and is handled after rollback.
         repository.saveAndFlush(booking);
@@ -44,14 +44,16 @@ public class BookingService {
     }
 
     @Transactional(readOnly = true)
-    public BookingResponse get(UUID id) {
+    public BookingResponse get(UUID id, BookingActor actor) {
         Booking booking = requireBooking(id);
+        requireOwnerOrAdministrator(booking, actor);
         return BookingResponse.from(booking, clock.instant());
     }
 
     @Transactional
-    public BookingResponse confirm(UUID id) {
+    public BookingResponse confirm(UUID id, BookingActor actor) {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        requireOwnerOrAdministrator(requireBooking(id), actor);
         if (repository.confirmPending(id, now) == 1) {
             return BookingResponse.from(requireBooking(id), now);
         }
@@ -59,8 +61,9 @@ public class BookingService {
     }
 
     @Transactional
-    public BookingResponse cancel(UUID id) {
+    public BookingResponse cancel(UUID id, BookingActor actor) {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        requireOwnerOrAdministrator(requireBooking(id), actor);
         if (repository.cancelPending(id, now) == 1) {
             return BookingResponse.from(requireBooking(id), now);
         }
@@ -84,5 +87,11 @@ public class BookingService {
         }
         return new ResponseStatusException(HttpStatus.CONFLICT,
                 "Booking in state " + booking.getStatus() + " cannot be " + targetState);
+    }
+
+    private void requireOwnerOrAdministrator(Booking booking, BookingActor actor) {
+        if (!actor.administrator() && !booking.getUserId().equals(actor.subject())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You cannot access this booking");
+        }
     }
 }

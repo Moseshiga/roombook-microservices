@@ -1,0 +1,58 @@
+{
+  "realm": "roombook",
+  "enabled": true,
+  "displayName": "RoomBook",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "roles": {
+    "realm": [
+      {"name": "USER", "description": "Can create and manage own bookings"},
+      {"name": "ADMIN", "description": "Can manage any booking"}
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "roombook-ui",
+      "name": "RoomBook UI",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:3000/*", "http://127.0.0.1:3000/*"],
+      "webOrigins": ["http://localhost:3000", "http://127.0.0.1:3000"],
+      "attributes": {"pkce.code.challenge.method": "S256"}
+    },
+    {
+      "clientId": "roombook-service",
+      "name": "RoomBook service client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "secret": "${ROOMBOOK_SERVICE_CLIENT_SECRET}"
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@roombook.local",
+      "firstName": "Alice",
+      "lastName": "User",
+      "realmRoles": ["USER"],
+      "credentials": [{"type": "password", "value": "${ROOMBOOK_ALICE_PASSWORD}", "temporary": false}]
+    },
+    {
+      "username": "admin-user",
+      "enabled": true,
+      "email": "admin@roombook.local",
+      "firstName": "Admin",
+      "lastName": "User",
+      "realmRoles": ["USER", "ADMIN"],
+      "credentials": [{"type": "password", "value": "${ROOMBOOK_ADMIN_PASSWORD}", "temporary": false}]
+    }
+  ]
+}

@@ -6,9 +6,11 @@ A learning project focused on reliable reservations and microservice communicati
 
 Create a temporary room reservation and retrieve it by ID. PostgreSQL protects each
 hourly slot against concurrent reservations, including requests from different JVMs.
+Keycloak authenticates callers; the booking owner comes from the JWT `sub` claim.
 
-Stack: Java 21, Spring Boot 4.1, Spring MVC, Bean Validation, JPA, PostgreSQL 17,
-Flyway and Actuator. Integration tests use a real PostgreSQL Testcontainer.
+Stack: Java 21, Spring Boot 4.1, Spring MVC, Spring Security OAuth2 Resource Server,
+Bean Validation, JPA, PostgreSQL 17, Flyway, Keycloak and Actuator. Integration tests
+use a real PostgreSQL Testcontainer.
 
 ## Run locally (PowerShell)
 
@@ -16,7 +18,8 @@ Requirements: JDK 21 and Docker with a running Linux container engine. Maven is
 provided by the checked-in wrapper. From the project directory:
 
 ```powershell
-docker compose up -d --wait postgres
+Copy-Item .env.example .env
+docker compose up -d postgres keycloak
 .\mvnw.cmd spring-boot:run "-Dspring-boot.run.jvmArguments=-Xms64m -Xmx256m"
 ```
 
@@ -24,10 +27,18 @@ Alternatively run `BookingServiceApplication` in IntelliJ with VM options
 `-Xms64m -Xmx256m`. Heap limits do not limit the entire JVM process.
 
 The default `local` profile connects to `localhost:5433/bookings_db`, username
-`booking`, password `booking_local`. PostgreSQL and the HTTP server bind to loopback.
-The database container has a 384 MiB memory limit; Docker engine memory is separate.
-Credentials and the database superuser are for local development only. Deployments
-will need external secrets, restricted database roles and authentication.
+`booking`, password `booking_local`. Keycloak is available only on
+`http://localhost:8081`; it has a separate `keycloak_db` in the same PostgreSQL
+container. PostgreSQL, Keycloak and the HTTP server bind to loopback. The containers
+are limited to 384 MiB and 768 MiB respectively. Docker engine memory is separate.
+
+`.env` contains local-only secrets and is ignored by Git. Keep `.env.example` as a
+template and replace its placeholders before the first start. The imported `roombook`
+realm contains `USER` and `ADMIN` roles, a public `roombook-ui` client for a future
+browser UI (Authorization Code + PKCE), and a confidential `roombook-service` client
+for future service-to-service calls. Open the [Keycloak Admin Console](http://localhost:8081/admin/)
+and sign in with `KEYCLOAK_ADMIN_USERNAME` and `KEYCLOAK_ADMIN_PASSWORD` from `.env`.
+It also imports the local users `alice` (USER) and `admin-user` (USER, ADMIN).
 
 ## API
 
@@ -39,20 +50,20 @@ will need external secrets, restricted database roles and authentication.
 | POST | `/api/bookings/{id}/cancel` | `200 OK` for a non-expired `PENDING` reservation |
 | GET | `/actuator/health` | Application health |
 
-Create and read a reservation for tomorrow at 12:00 UTC:
+All booking endpoints require a Bearer access token with the Keycloak realm role
+`USER` or `ADMIN`. `GET /actuator/health` stays public. A browser client will obtain
+the token through the `roombook-ui` Authorization Code + PKCE flow; we will add that
+UI in a later step.
+
+The JSON body deliberately has no `userId`: the service stores the `sub` claim from
+the verified access token. The request shape is:
 
 ```powershell
 $slotStart = [DateTime]::UtcNow.Date.AddDays(1).AddHours(12).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
 $body = @{
     roomId = '11111111-1111-1111-1111-111111111111'
-    userId = '22222222-2222-2222-2222-222222222222'
     slotStart = $slotStart
 } | ConvertTo-Json
-
-$booking = Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/bookings `
-    -ContentType 'application/json' -Body $body
-$booking
-Invoke-RestMethod "http://localhost:8080/api/bookings/$($booking.id)"
 ```
 
 The response contains `id`, `roomId`, `userId`, `slotStart`, `slotEnd`, `status`,
@@ -60,6 +71,10 @@ The response contains `id`, `roomId`, `userId`, `slotStart`, `slotEnd`, `status`
 offset (`Z` is UTC). Slots start on whole UTC hours and last exactly one hour.
 
 - Missing/invalid fields, past slots and non-hour-aligned times return `400`.
+- A missing or invalid access token returns `401`; an authenticated caller without
+  USER or ADMIN returns `403`.
+- The owner may read, confirm and cancel their booking. An ADMIN may perform these
+  operations on any booking; a different USER receives `403`.
 - An occupied slot returns `409` with an `application/problem+json` response.
 - A hold lasts ten minutes, capped at the slot start if it is less than ten minutes away.
 - Confirmation and cancellation are competing atomic state transitions. Only an
@@ -113,11 +128,12 @@ With Docker running (the Compose database is not required):
 .\mvnw.cmd verify
 ```
 
-Tests use an isolated, automatically removed PostgreSQL container and a fixed clock.
-They exercise the HTTP server, migrations and real database constraints. Coverage
-includes concurrent requests, a deterministic blocked database insert, expired-hold
-replacement, inactive history, confirmed reservations, input validation and retrieval.
-The local development database is not touched by tests. Tests run sequentially.
+Tests use an isolated, automatically removed PostgreSQL container, a fixed clock and
+a deterministic test JWT decoder. They exercise the HTTP server, migrations, JWT role
+mapping and real database constraints. The local development database is not touched.
+Coverage includes concurrent requests, a deterministic blocked database insert,
+expired-hold replacement, inactive history, confirmed reservations, input validation,
+authentication, authorization and ownership. Tests run sequentially.
 
 ## Stop
 
@@ -132,18 +148,18 @@ startup; Hibernate uses `ddl-auto=validate` and does not modify the schema.
 
 ## Scope and next steps
 
-Room and user UUIDs are currently caller-supplied demo identifiers. There is no room
-catalog lookup, authentication or ownership enforcement yet. Do not expose this
-learning-stage API publicly. Keycloak integration will replace caller-supplied user
-identity with the authenticated subject. Confirmation, cancellation, background
-expiration, messaging and idempotency are subsequent steps.
+There is no room catalog lookup yet. The public UI client and service client exist in
+Keycloak, but neither is used by an application UI or another service yet. Room
+catalog, messaging, idempotency, OpenFeign and gRPC are subsequent steps. Do not
+expose this learning-stage API publicly.
 
 ## Configuration
 
-Local application overrides: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`. Compose does not
-automatically pass environment variables to an app launched separately from IntelliJ.
-For deployment, explicitly select another `SPRING_PROFILES_ACTIVE` value and provide
-`SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`.
+Local application overrides: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` and
+`KEYCLOAK_ISSUER_URI`. Compose does not automatically pass environment variables to
+an app launched separately from IntelliJ. For deployment, explicitly select another
+`SPRING_PROFILES_ACTIVE` value and provide `SPRING_DATASOURCE_URL`,
+`SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD` and a production issuer.
 
 ## References
 
@@ -151,3 +167,5 @@ For deployment, explicitly select another `SPRING_PROFILES_ACTIVE` value and pro
 - [Spring Boot Testcontainers](https://docs.spring.io/spring-boot/reference/testing/testcontainers.html)
 - [Spring Boot application properties](https://docs.spring.io/spring-boot/appendix/application-properties/index.html)
 - [Docker Compose services](https://docs.docker.com/reference/compose-file/services/)
+- [Keycloak server administration guide](https://www.keycloak.org/docs/latest/server_admin/)
+- [Spring Security OAuth2 Resource Server](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html)

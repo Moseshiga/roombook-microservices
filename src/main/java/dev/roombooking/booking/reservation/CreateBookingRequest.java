@@ -7,7 +7,6 @@ import java.util.UUID;
 
 public record CreateBookingRequest(
         @NotNull UUID roomId,
-        @NotNull UUID userId,
         @NotNull Instant slotStart
 ) {
 }

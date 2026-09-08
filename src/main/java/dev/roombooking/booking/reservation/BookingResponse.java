@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
-public record BookingResponse(UUID id, UUID roomId, UUID userId, Instant slotStart,
+public record BookingResponse(UUID id, UUID roomId, String userId, Instant slotStart,
                               Instant slotEnd, BookingStatus status, Instant createdAt,
                               Instant expiresAt) {
     static BookingResponse from(Booking booking, Instant now) {

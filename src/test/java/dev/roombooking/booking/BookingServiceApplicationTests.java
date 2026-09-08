@@ -17,6 +17,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -36,6 +38,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.UUID;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -50,6 +54,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BookingServiceApplicationTests {
     private static final Instant NOW = Instant.parse("2030-01-01T10:55:00Z");
     private static final String SLOT = "2030-01-02T12:00:00Z";
+    private static final String ALICE_SUBJECT = "alice-subject";
+    private static final String BOB_SUBJECT = "bob-subject";
     private static final UUID ROOM = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
@@ -83,12 +89,11 @@ class BookingServiceApplicationTests {
 
     @Test
     void createsAndReadsTenMinuteHold() throws Exception {
-        UUID user = UUID.randomUUID();
-        var response = post(body(ROOM, user, SLOT));
+        var response = post(body(ROOM, UUID.randomUUID(), SLOT));
         assertThat(response.statusCode()).isEqualTo(201);
         JsonNode booking = mapper.readTree(response.body());
         assertThat(booking.get("status").asText()).isEqualTo("PENDING");
-        assertThat(booking.get("userId").asText()).isEqualTo(user.toString());
+        assertThat(booking.get("userId").asText()).isEqualTo(ALICE_SUBJECT);
         assertThat(booking.get("createdAt").asText()).isEqualTo(NOW.toString());
         assertThat(booking.get("expiresAt").asText()).isEqualTo("2030-01-01T11:05:00Z");
         assertThat(booking.get("slotEnd").asText()).isEqualTo("2030-01-02T13:00:00Z");
@@ -97,6 +102,24 @@ class BookingServiceApplicationTests {
         var read = get(location);
         assertThat(read.statusCode()).isEqualTo(200);
         assertThat(mapper.readTree(read.body())).isEqualTo(booking);
+    }
+
+    @Test
+    void requiresBearerTokenAndUserOrAdminRole() throws Exception {
+        assertThat(postAs(null, body(ROOM, SLOT)).statusCode()).isEqualTo(401);
+        assertThat(postAs("guest-token", body(ROOM, SLOT)).statusCode()).isEqualTo(403);
+        assertThat(postAs("alice-token", body(ROOM, SLOT)).statusCode()).isEqualTo(201);
+    }
+
+    @Test
+    void onlyOwnerOrAdministratorCanReadAndChangeBooking() throws Exception {
+        UUID bookingId = seedForUser(ROOM, BOB_SUBJECT, "PENDING", "2030-01-01T11:05:00Z");
+        assertThat(getAs("alice-token", "/api/bookings/" + bookingId).statusCode()).isEqualTo(403);
+        assertThat(postWithoutBody("/api/bookings/" + bookingId + "/cancel", "alice-token").statusCode())
+                .isEqualTo(403);
+        assertThat(getAs("admin-token", "/api/bookings/" + bookingId).statusCode()).isEqualTo(200);
+        assertThat(postWithoutBody("/api/bookings/" + bookingId + "/cancel", "admin-token").statusCode())
+                .isEqualTo(200);
     }
 
     @Test
@@ -313,11 +336,15 @@ class BookingServiceApplicationTests {
     }
 
     private UUID seedForRoom(UUID room, String status, String expiresAt) {
+        return seedForUser(room, ALICE_SUBJECT, status, expiresAt);
+    }
+
+    private UUID seedForUser(UUID room, String userId, String status, String expiresAt) {
         UUID id = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO bookings (id, room_id, user_id, slot_start, status, created_at, expires_at)
                 VALUES (?, ?, ?, CAST(? AS timestamptz), ?, '2030-01-01T10:45:00Z', CAST(? AS timestamptz))
-                """, id, room, UUID.randomUUID(), SLOT, status, expiresAt);
+                """, id, room, userId, SLOT, status, expiresAt);
         return id;
     }
 
@@ -326,9 +353,13 @@ class BookingServiceApplicationTests {
     }
 
     private String body(UUID room, UUID user, String slot) {
+        return body(room, slot);
+    }
+
+    private String body(UUID room, String slot) {
         return """
-                {"roomId":"%s", "userId":"%s", "slotStart":"%s"}
-                """.formatted(room, user, slot);
+                {"roomId":"%s", "slotStart":"%s"}
+                """.formatted(room, slot);
     }
 
     private UUID createBooking() throws Exception {
@@ -345,24 +376,51 @@ class BookingServiceApplicationTests {
     }
 
     private HttpRequest postRequest(String body) {
-        return HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/bookings"))
+        return postRequest(body, "alice-token");
+    }
+
+    private HttpRequest postRequest(String body, String token) {
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/bookings"))
                 .timeout(Duration.ofSeconds(10)).header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body)).build();
+                .POST(HttpRequest.BodyPublishers.ofString(body));
+        if (token != null) {
+            request.header("Authorization", "Bearer " + token);
+        }
+        return request.build();
     }
 
     private HttpResponse<String> post(String body) throws Exception {
         return HTTP.send(postRequest(body), HttpResponse.BodyHandlers.ofString());
     }
 
+    private HttpResponse<String> postAs(String token, String body) throws Exception {
+        return HTTP.send(postRequest(body, token), HttpResponse.BodyHandlers.ofString());
+    }
+
     private HttpResponse<String> postWithoutBody(String path) throws Exception {
-        return HTTP.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
-                .timeout(Duration.ofSeconds(10)).POST(HttpRequest.BodyPublishers.noBody()).build(),
-                HttpResponse.BodyHandlers.ofString());
+        return postWithoutBody(path, "alice-token");
+    }
+
+    private HttpResponse<String> postWithoutBody(String path, String token) throws Exception {
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                .timeout(Duration.ofSeconds(10)).POST(HttpRequest.BodyPublishers.noBody());
+        if (token != null) {
+            request.header("Authorization", "Bearer " + token);
+        }
+        return HTTP.send(request.build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private HttpResponse<String> get(String path) throws Exception {
-        return HTTP.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
-                .timeout(Duration.ofSeconds(10)).GET().build(), HttpResponse.BodyHandlers.ofString());
+        return getAs("alice-token", path);
+    }
+
+    private HttpResponse<String> getAs(String token, String path) throws Exception {
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                .timeout(Duration.ofSeconds(10)).GET();
+        if (token != null) {
+            request.header("Authorization", "Bearer " + token);
+        }
+        return HTTP.send(request.build(), HttpResponse.BodyHandlers.ofString());
     }
 
     @TestConfiguration(proxyBeanMethods = false)
@@ -370,5 +428,27 @@ class BookingServiceApplicationTests {
         @Bean
         @Primary
         Clock testClock() { return Clock.fixed(NOW, ZoneOffset.UTC); }
+
+        @Bean
+        @Primary
+        JwtDecoder testJwtDecoder() {
+            return token -> switch (token) {
+                case "alice-token" -> jwt(token, ALICE_SUBJECT, "USER");
+                case "bob-token" -> jwt(token, BOB_SUBJECT, "USER");
+                case "admin-token" -> jwt(token, "admin-subject", "ADMIN");
+                case "guest-token" -> jwt(token, "guest-subject", "GUEST");
+                default -> throw new org.springframework.security.oauth2.jwt.BadJwtException("Unknown test token");
+            };
+        }
+
+        private Jwt jwt(String token, String subject, String role) {
+            return Jwt.withTokenValue(token)
+                    .header("alg", "none")
+                    .subject(subject)
+                    .issuedAt(NOW.minusSeconds(60))
+                    .expiresAt(NOW.plusSeconds(3600))
+                    .claim("realm_access", Map.of("roles", List.of(role)))
+                    .build();
+        }
     }
 }

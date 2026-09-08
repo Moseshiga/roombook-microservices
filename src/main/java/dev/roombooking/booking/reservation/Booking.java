@@ -18,7 +18,7 @@ public class Booking {
     @Column(nullable = false)
     private UUID roomId;
     @Column(nullable = false)
-    private UUID userId;
+    private String userId;
     @Column(nullable = false)
     private Instant slotStart;
     @Enumerated(EnumType.STRING)
@@ -32,7 +32,7 @@ public class Booking {
     protected Booking() {
     }
 
-    Booking(UUID roomId, UUID userId, Instant slotStart, Instant createdAt, Instant expiresAt) {
+    Booking(UUID roomId, String userId, Instant slotStart, Instant createdAt, Instant expiresAt) {
         this.id = UUID.randomUUID();
         this.roomId = roomId;
         this.userId = userId;
@@ -44,7 +44,7 @@ public class Booking {
 
     public UUID getId() { return id; }
     public UUID getRoomId() { return roomId; }
-    public UUID getUserId() { return userId; }
+    public String getUserId() { return userId; }
     public Instant getSlotStart() { return slotStart; }
     public BookingStatus getStatus() { return status; }
     public Instant getCreatedAt() { return createdAt; }
