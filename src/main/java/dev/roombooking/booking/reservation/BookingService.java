@@ -1,5 +1,6 @@
 package dev.roombooking.booking.reservation;
 
+import dev.roombooking.booking.room.RoomCatalogGateway;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,15 +16,18 @@ import java.util.UUID;
 public class BookingService {
     private static final Duration HOLD_DURATION = Duration.ofMinutes(10);
     private final BookingRepository repository;
+    private final RoomCatalogGateway roomCatalogGateway;
     private final Clock clock;
 
-    public BookingService(BookingRepository repository, Clock clock) {
+    public BookingService(BookingRepository repository, RoomCatalogGateway roomCatalogGateway, Clock clock) {
         this.repository = repository;
+        this.roomCatalogGateway = roomCatalogGateway;
         this.clock = clock;
     }
 
     @Transactional
     public BookingResponse create(CreateBookingRequest request, BookingActor actor) {
+        roomCatalogGateway.requireActiveRoom(request.roomId());
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         if (!request.slotStart().isAfter(now)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "slotStart must be in the future");

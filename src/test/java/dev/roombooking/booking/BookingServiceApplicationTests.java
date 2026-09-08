@@ -1,6 +1,11 @@
 package dev.roombooking.booking;
 
 import dev.roombooking.booking.reservation.BookingService;
+import dev.roombooking.booking.room.RoomCatalogClient;
+import dev.roombooking.booking.room.RoomCatalogResponse;
+import feign.FeignException;
+import feign.Request;
+import feign.Response;
 import net.javacrumbs.shedlock.core.LockConfiguration;
 import net.javacrumbs.shedlock.core.LockProvider;
 import net.javacrumbs.shedlock.provider.jdbctemplate.JdbcTemplateLockProvider;
@@ -22,6 +27,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -33,6 +39,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -45,6 +52,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.BDDMockito.given;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = "booking.expiration.cleanup.enabled=false")
@@ -76,10 +85,15 @@ class BookingServiceApplicationTests {
     @Autowired DataSource dataSource;
     @Autowired BookingService bookingService;
     @Autowired LockProvider lockProvider;
+    @MockitoBean RoomCatalogClient roomCatalogClient;
 
     @BeforeEach
     void clearTestDatabase() {
         jdbc.update("DELETE FROM bookings");
+        given(roomCatalogClient.getActiveRoom(any())).willAnswer(invocation -> {
+            UUID roomId = invocation.getArgument(0);
+            return new RoomCatalogResponse(roomId, true);
+        });
     }
 
     @AfterAll
@@ -109,6 +123,22 @@ class BookingServiceApplicationTests {
         assertThat(postAs(null, body(ROOM, SLOT)).statusCode()).isEqualTo(401);
         assertThat(postAs("guest-token", body(ROOM, SLOT)).statusCode()).isEqualTo(403);
         assertThat(postAs("alice-token", body(ROOM, SLOT)).statusCode()).isEqualTo(201);
+    }
+
+    @Test
+    void rejectsBookingForARoomThatTheCatalogDoesNotExpose() throws Exception {
+        UUID missingRoom = UUID.randomUUID();
+        given(roomCatalogClient.getActiveRoom(missingRoom)).willThrow(FeignException.errorStatus(
+                "RoomCatalogClient#getActiveRoom",
+                Response.builder()
+                        .status(404)
+                        .reason("Not Found")
+                        .request(Request.create(Request.HttpMethod.GET, "http://room-service/api/rooms/" + missingRoom,
+                                Map.of(), null, StandardCharsets.UTF_8, null))
+                        .build()));
+
+        assertThat(post(body(missingRoom, UUID.randomUUID(), SLOT)).statusCode()).isEqualTo(400);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM bookings", Integer.class)).isZero();
     }
 
     @Test
