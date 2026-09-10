@@ -3,6 +3,9 @@
 The room catalog owns room names, locations, capacities and activation state. It has
 its own `rooms_db` database and never reads the booking-service schema.
 
+The service registers itself in Eureka as `room-service`. For local development, start
+`discovery-server` first; the registry is available at `http://localhost:8761`.
+
 ## API
 
 All endpoints use the `roombook` Keycloak realm.

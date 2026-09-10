@@ -7,11 +7,13 @@ A learning project focused on reliable reservations and microservice communicati
 Create a temporary room reservation and retrieve it by ID. PostgreSQL protects each
 hourly slot against concurrent reservations, including requests from different JVMs.
 Keycloak authenticates callers; the booking owner comes from the JWT `sub` claim.
-Before creating a hold, booking-service verifies the requested room through room-service.
+Before creating a hold, booking-service finds room-service through Eureka and verifies
+the requested room through an OpenFeign HTTP call.
 
 Stack: Java 21, Spring Boot 4.1, Spring MVC, Spring Security OAuth2 Resource Server,
-Bean Validation, JPA, PostgreSQL 17, Flyway, Keycloak, Spring Cloud OpenFeign and
-Actuator. Integration tests use a real PostgreSQL Testcontainer.
+Bean Validation, JPA, PostgreSQL 17, Flyway, Keycloak, Spring Cloud OpenFeign,
+Eureka, Spring Cloud LoadBalancer and Actuator. Integration tests use a real
+PostgreSQL Testcontainer.
 
 ## Run locally (PowerShell)
 
@@ -21,12 +23,15 @@ provided by the checked-in wrapper. From the project directory:
 ```powershell
 Copy-Item .env.example .env
 docker compose up -d postgres keycloak
+.\mvnw.cmd -f discovery-server\pom.xml spring-boot:run
 .\mvnw.cmd -f room-service\pom.xml spring-boot:run
 .\mvnw.cmd spring-boot:run "-Dspring-boot.run.jvmArguments=-Xms64m -Xmx256m"
 ```
 
-Alternatively run `BookingServiceApplication` in IntelliJ with VM options
-`-Xms64m -Xmx256m`. Heap limits do not limit the entire JVM process.
+Run these in separate terminals, or start `DiscoveryServerApplication`,
+`RoomServiceApplication` and `BookingServiceApplication` in IntelliJ in that order.
+For the application services, VM options `-Xms64m -Xmx256m` are sufficient locally.
+Heap limits do not limit the entire JVM process.
 
 The default `local` profile connects to `localhost:5433/bookings_db`, username
 `booking`, password `booking_local`. Keycloak is available only on
@@ -42,8 +47,10 @@ for future service-to-service calls. Open the [Keycloak Admin Console](http://lo
 and sign in with `KEYCLOAK_ADMIN_USERNAME` and `KEYCLOAK_ADMIN_PASSWORD` from `.env`.
 It also imports the local users `alice` (USER) and `admin-user` (USER, ADMIN).
 
-[`room-service`](room-service/README.md) owns the independent `rooms_db` catalog and
-starts on port `8082`. Start it before booking-service for local booking requests.
+[`discovery-server`](discovery-server/README.md) runs the Eureka registry and dashboard
+on `http://localhost:8761`. [`room-service`](room-service/README.md) owns the independent
+`rooms_db` catalog and starts on port `8082`. Once both application services have
+registered, the dashboard shows `BOOKING-SERVICE` and `ROOM-SERVICE`.
 
 ## API
 
@@ -155,17 +162,19 @@ startup; Hibernate uses `ddl-auto=validate` and does not modify the schema.
 
 ## Scope and next steps
 
-Room catalog is a separate service reached through OpenFeign with a configured local
-URL. The public UI client and service client exist in Keycloak, but neither is used by
-an application UI or another service yet. Service discovery, messaging, idempotency
-and gRPC are subsequent steps. Do not expose this learning-stage API publicly.
+Room catalog is a separate service reached through OpenFeign. The client supplies only
+the logical service ID `room-service`; Eureka resolves healthy instances and Spring
+Cloud LoadBalancer chooses one. The public UI client and service client exist in
+Keycloak, but neither is used by an application UI or another service yet. Messaging,
+idempotency and gRPC are subsequent steps. Do not expose this learning-stage API publicly.
 
 ## Configuration
 
 Local application overrides: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` and
-`KEYCLOAK_ISSUER_URI`. `ROOM_SERVICE_URL` changes the target of the OpenFeign room
-catalog client. Compose does not automatically pass environment variables to an app
-launched separately from IntelliJ. For deployment, explicitly select another
+`KEYCLOAK_ISSUER_URI`. `EUREKA_URL` changes the registry address and
+`EUREKA_INSTANCE_HOSTNAME` changes the hostname advertised by an application service.
+Compose does not automatically pass environment variables to an app launched separately
+from IntelliJ. For deployment, explicitly select another
 `SPRING_PROFILES_ACTIVE` value and provide `SPRING_DATASOURCE_URL`,
 `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD` and a production issuer.
 
@@ -178,3 +187,4 @@ launched separately from IntelliJ. For deployment, explicitly select another
 - [Keycloak server administration guide](https://www.keycloak.org/docs/latest/server_admin/)
 - [Spring Security OAuth2 Resource Server](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html)
 - [Spring Cloud OpenFeign](https://docs.spring.io/spring-cloud-openfeign/reference/)
+- [Spring Cloud Netflix Eureka](https://docs.spring.io/spring-cloud-netflix/reference/)

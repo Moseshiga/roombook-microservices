@@ -56,7 +56,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "booking.expiration.cleanup.enabled=false")
+        properties = {
+                "booking.expiration.cleanup.enabled=false",
+                "eureka.client.enabled=false"
+        })
 @ActiveProfiles("test")
 @Import(BookingServiceApplicationTests.TimeFixture.class)
 @Testcontainers

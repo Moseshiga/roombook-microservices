@@ -8,7 +8,6 @@ import java.util.UUID;
 
 @FeignClient(
         name = "room-service",
-        url = "${room-service.url:http://localhost:8082}",
         configuration = RoomCatalogClientConfiguration.class
 )
 public interface RoomCatalogClient {
