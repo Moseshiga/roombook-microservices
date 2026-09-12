@@ -1,6 +1,8 @@
 package dev.roombooking.booking;
 
 import dev.roombooking.booking.reservation.BookingService;
+import dev.roombooking.booking.messaging.BookingConfirmedMessage;
+import dev.roombooking.booking.messaging.BookingMessagingTopology;
 import dev.roombooking.booking.room.RoomCatalogClient;
 import dev.roombooking.booking.room.RoomCatalogResponse;
 import feign.FeignException;
@@ -15,6 +17,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.amqp.core.MessagePostProcessor;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -53,7 +57,10 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.then;
+import static org.mockito.Mockito.clearInvocations;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
@@ -89,10 +96,12 @@ class BookingServiceApplicationTests {
     @Autowired BookingService bookingService;
     @Autowired LockProvider lockProvider;
     @MockitoBean RoomCatalogClient roomCatalogClient;
+    @MockitoBean RabbitTemplate rabbitTemplate;
 
     @BeforeEach
     void clearTestDatabase() {
         jdbc.update("DELETE FROM bookings");
+        clearInvocations(rabbitTemplate);
         given(roomCatalogClient.getActiveRoom(any())).willAnswer(invocation -> {
             UUID roomId = invocation.getArgument(0);
             return new RoomCatalogResponse(roomId, true);
@@ -164,6 +173,11 @@ class BookingServiceApplicationTests {
         assertThat(postWithoutBody("/api/bookings/" + id + "/cancel").statusCode()).isEqualTo(409);
         assertThat(mapper.readTree(get("/api/bookings/" + id).body()).get("status").asText())
                 .isEqualTo("CONFIRMED");
+        then(rabbitTemplate).should().convertAndSend(
+                eq(BookingMessagingTopology.EVENTS_EXCHANGE),
+                eq(BookingMessagingTopology.BOOKING_CONFIRMED_ROUTING_KEY),
+                any(BookingConfirmedMessage.class),
+                any(MessagePostProcessor.class));
     }
 
     @Test

@@ -1,4 +1,4 @@
-# RoomBook: Booking Service
+# RoomBook Microservices
 
 A learning project focused on reliable reservations and microservice communication.
 
@@ -8,12 +8,26 @@ Create a temporary room reservation and retrieve it by ID. PostgreSQL protects e
 hourly slot against concurrent reservations, including requests from different JVMs.
 Keycloak authenticates callers; the booking owner comes from the JWT `sub` claim.
 Before creating a hold, booking-service finds room-service through Eureka and verifies
-the requested room through an OpenFeign HTTP call.
+the requested room through an OpenFeign HTTP call. A successful confirmation publishes
+a versioned event to RabbitMQ after the database transaction commits;
+notification-service consumes it asynchronously.
 
 Stack: Java 21, Spring Boot 4.1, Spring MVC, Spring Security OAuth2 Resource Server,
 Bean Validation, JPA, PostgreSQL 17, Flyway, Keycloak, Spring Cloud OpenFeign,
-Eureka, Spring Cloud LoadBalancer and Actuator. Integration tests use a real
+Eureka, Spring Cloud LoadBalancer, RabbitMQ and Actuator. Integration tests use a real
 PostgreSQL Testcontainer.
+
+The repository is a Maven multi-module project. Its root POM contains shared Java,
+Spring Boot and Spring Cloud versions and aggregates four independently runnable
+applications:
+
+```text
+roombook-parent
+├── booking-service
+├── room-service
+├── notification-service
+└── discovery-server
+```
 
 ## Run locally (PowerShell)
 
@@ -22,22 +36,27 @@ provided by the checked-in wrapper. From the project directory:
 
 ```powershell
 Copy-Item .env.example .env
-docker compose up -d postgres keycloak
-.\mvnw.cmd -f discovery-server\pom.xml spring-boot:run
-.\mvnw.cmd -f room-service\pom.xml spring-boot:run
-.\mvnw.cmd spring-boot:run "-Dspring-boot.run.jvmArguments=-Xms64m -Xmx256m"
+docker compose up -d postgres keycloak rabbitmq
+.\mvnw.cmd -pl discovery-server spring-boot:run
+.\mvnw.cmd -pl room-service spring-boot:run
+.\mvnw.cmd -pl notification-service spring-boot:run `
+  "-Dspring-boot.run.jvmArguments=-Xms64m -Xmx192m"
+.\mvnw.cmd -pl booking-service spring-boot:run `
+  "-Dspring-boot.run.jvmArguments=-Xms64m -Xmx256m"
 ```
 
 Run these in separate terminals, or start `DiscoveryServerApplication`,
-`RoomServiceApplication` and `BookingServiceApplication` in IntelliJ in that order.
+`RoomServiceApplication`, `NotificationServiceApplication` and
+`BookingServiceApplication` in IntelliJ in that order.
 For the application services, VM options `-Xms64m -Xmx256m` are sufficient locally.
 Heap limits do not limit the entire JVM process.
 
 The default `local` profile connects to `localhost:5433/bookings_db`, username
 `booking`, password `booking_local`. Keycloak is available only on
 `http://localhost:8081`; it has a separate `keycloak_db` in the same PostgreSQL
-container. PostgreSQL, Keycloak and the HTTP server bind to loopback. The containers
-are limited to 384 MiB and 768 MiB respectively. Docker engine memory is separate.
+container. PostgreSQL, Keycloak and the HTTP server bind to loopback. PostgreSQL and
+RabbitMQ are limited to 384 MiB each; Keycloak is limited to 768 MiB. Docker engine
+memory is separate.
 
 `.env` contains local-only secrets and is ignored by Git. Keep `.env.example` as a
 template and replace its placeholders before the first start. The imported `roombook`
@@ -49,8 +68,14 @@ It also imports the local users `alice` (USER) and `admin-user` (USER, ADMIN).
 
 [`discovery-server`](discovery-server/README.md) runs the Eureka registry and dashboard
 on `http://localhost:8761`. [`room-service`](room-service/README.md) owns the independent
-`rooms_db` catalog and starts on port `8082`. Once both application services have
-registered, the dashboard shows `BOOKING-SERVICE` and `ROOM-SERVICE`.
+`rooms_db` catalog and starts on port `8082`. Once the application services have
+registered, the dashboard shows `BOOKING-SERVICE`, `ROOM-SERVICE` and
+`NOTIFICATION-SERVICE`.
+
+RabbitMQ accepts AMQP connections on `localhost:5672`. Its management UI is available
+at [http://localhost:15672](http://localhost:15672); sign in as `roombook` with the
+`RABBITMQ_PASSWORD` value from `.env`. If the variable is absent, Compose and the local
+Spring profiles use the learning-only fallback `roombook_local`.
 
 ## API
 
@@ -95,6 +120,35 @@ offset (`Z` is UTC). Slots start on whole UTC hours and last exactly one hour.
   unexpired `PENDING` booking can change; all other states return `409`.
 - Retrying an already successful POST currently returns `409`; idempotency keys are
   a separate future feature. The API does not yet recover a lost successful response.
+
+## Booking confirmation event
+
+`BookingService.confirm` performs the guarded `PENDING -> CONFIRMED` update and publishes
+an immutable in-process `BookingConfirmedEvent` while the database transaction is still
+active. `BookingConfirmedMessagePublisher` handles it with
+`@TransactionalEventListener(phase = AFTER_COMMIT)`. Therefore a rolled-back transaction
+does not produce a RabbitMQ message and RabbitMQ is not contacted before the database
+commit succeeds.
+
+The listener maps the domain event to the `booking.confirmed.v1` integration contract
+and sends JSON to the durable `roombook.events` topic exchange using the
+`booking.confirmed.v1` routing key. The message contains a unique `eventId`, occurrence
+time, booking and room IDs, the Keycloak subject, and the one-hour interval. It contains
+no access token or other authentication credentials.
+
+notification-service owns the durable `notification.booking-confirmed.v1` queue and
+binding. Its `@RabbitListener` deserializes the JSON into its own copy of the contract
+and invokes a replaceable `NotificationSender`; the current adapter writes a structured
+log entry. A consumer exception rejects the message without requeueing it. RabbitMQ then
+routes it to `notification.booking-confirmed.v1.dlq`, preventing an invalid message from
+forming an endless hot loop.
+
+This stage deliberately demonstrates the dual-write gap. `AFTER_COMMIT` orders the two
+actions, but it cannot make PostgreSQL and RabbitMQ one atomic transaction. If RabbitMQ
+is unavailable after PostgreSQL commits, the publisher logs the failure and the
+confirmation remains valid, but the notification can be lost. The next messaging stage
+will persist an outbox row in the same PostgreSQL transaction, publish it later with
+retries, and make the consumer idempotent by `eventId`.
 
 ## Concurrency and expiration
 
@@ -147,7 +201,10 @@ a deterministic test JWT decoder. They exercise the HTTP server, migrations, JWT
 mapping and real database constraints. The local development database is not touched.
 Coverage includes concurrent requests, a deterministic blocked database insert,
 expired-hold replacement, inactive history, confirmed reservations, input validation,
-authentication, authorization and ownership. Tests run sequentially.
+authentication, authorization and ownership. The booking test replaces RabbitTemplate
+with a mock and verifies that a successful committed confirmation emits the integration
+contract. notification-service has a focused listener delegation test. Tests run
+sequentially.
 
 ## Stop
 
@@ -165,14 +222,17 @@ startup; Hibernate uses `ddl-auto=validate` and does not modify the schema.
 Room catalog is a separate service reached through OpenFeign. The client supplies only
 the logical service ID `room-service`; Eureka resolves healthy instances and Spring
 Cloud LoadBalancer chooses one. The public UI client and service client exist in
-Keycloak, but neither is used by an application UI or another service yet. Messaging,
-idempotency and gRPC are subsequent steps. Do not expose this learning-stage API publicly.
+Keycloak, but neither is used by an application UI or another service yet. Reliable
+outbox delivery, consumer idempotency and gRPC are subsequent steps. Do not expose this
+learning-stage API publicly.
 
 ## Configuration
 
 Local application overrides: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` and
 `KEYCLOAK_ISSUER_URI`. `EUREKA_URL` changes the registry address and
 `EUREKA_INSTANCE_HOSTNAME` changes the hostname advertised by an application service.
+RabbitMQ overrides are `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USERNAME` and
+`RABBITMQ_PASSWORD`.
 Compose does not automatically pass environment variables to an app launched separately
 from IntelliJ. For deployment, explicitly select another
 `SPRING_PROFILES_ACTIVE` value and provide `SPRING_DATASOURCE_URL`,
@@ -188,3 +248,5 @@ from IntelliJ. For deployment, explicitly select another
 - [Spring Security OAuth2 Resource Server](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html)
 - [Spring Cloud OpenFeign](https://docs.spring.io/spring-cloud-openfeign/reference/)
 - [Spring Cloud Netflix Eureka](https://docs.spring.io/spring-cloud-netflix/reference/)
+- [Spring Boot AMQP](https://docs.spring.io/spring-boot/reference/messaging/amqp.html)
+- [Spring transaction-bound events](https://docs.spring.io/spring-framework/reference/data-access/transaction/event.html)

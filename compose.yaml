@@ -65,5 +65,24 @@ services:
       - ./infra/keycloak/import:/opt/keycloak/data/import:ro
     mem_limit: 768m
 
+  rabbitmq:
+    image: rabbitmq:4.2-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: roombook
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-roombook_local}
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
 volumes:
   booking-postgres-data:
+  rabbitmq-data:

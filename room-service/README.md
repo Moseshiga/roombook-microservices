@@ -21,7 +21,7 @@ All endpoints use the `roombook` Keycloak realm.
 Run from the repository root after starting the Compose infrastructure:
 
 ```powershell
-.\mvnw.cmd -f room-service\pom.xml spring-boot:run
+.\mvnw.cmd -pl room-service spring-boot:run
 ```
 
 The local profile uses `localhost:5433/rooms_db` and starts on port `8082`.

@@ -10,9 +10,9 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>room-service</artifactId>
-    <name>room-service</name>
-    <description>Room catalog for the RoomBook learning project</description>
+    <artifactId>booking-service</artifactId>
+    <name>booking-service</name>
+    <description>Reliable room reservations for the RoomBook learning project</description>
 
     <dependencies>
         <dependency>
@@ -45,18 +45,40 @@
         </dependency>
         <dependency>
             <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
         </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
         <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-provider-jdbc-template</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
+
+        <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
-
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator-test</artifactId>
