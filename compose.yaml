@@ -40,6 +40,9 @@ services:
         if ! psql -h postgres -U booking -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'rooms_db'" | grep -q 1; then
           psql -h postgres -U booking -d postgres -c "CREATE DATABASE rooms_db OWNER booking;"
         fi
+        if ! psql -h postgres -U booking -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'notifications_db'" | grep -q 1; then
+          psql -h postgres -U booking -d postgres -c "CREATE DATABASE notifications_db OWNER booking;"
+        fi
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.7.3

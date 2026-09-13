@@ -6,21 +6,22 @@ import org.springframework.amqp.support.converter.JacksonJsonMessageConverter;
 
 import java.time.Instant;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 class BookingConfirmedMessageListenerTests {
 
     @Test
-    void delegatesTheDeserializedContractToTheNotificationAdapter() {
-        AtomicReference<BookingConfirmedMessage> delivered = new AtomicReference<>();
-        BookingConfirmedMessageListener listener = new BookingConfirmedMessageListener(delivered::set);
+    void delegatesTheDeserializedContractToTheTransactionalHandler() {
+        BookingNotificationHandler handler = mock(BookingNotificationHandler.class);
+        BookingConfirmedMessageListener listener = new BookingConfirmedMessageListener(handler);
         BookingConfirmedMessage message = message();
 
         listener.handle(message);
 
-        assertThat(delivered.get()).isSameAs(message);
+        verify(handler).handle(message);
     }
 
     @Test

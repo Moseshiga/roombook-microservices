@@ -139,19 +139,26 @@ as routing key. Publisher confirms and mandatory returns are enabled; `published
 set only after RabbitMQ acknowledges the message and confirms that it was routable.
 Failures retain the row and move `next_attempt_at` using bounded exponential backoff.
 
-notification-service owns the durable `notification.booking-confirmed.v1` queue and
-binding. Its `@RabbitListener` deserializes the JSON into its own copy of the contract
-and invokes a replaceable `NotificationSender`; the current adapter writes a structured
-log entry. A consumer exception rejects the message without requeueing it. RabbitMQ then
-routes it to `notification.booking-confirmed.v1.dlq`, preventing an invalid message from
-forming an endless hot loop.
+notification-service owns the durable `notification.booking-confirmed.v1` queue,
+binding and a separate `notifications_db`. Its `@RabbitListener` deserializes the JSON
+into its own copy of the contract. A transactional handler atomically claims `eventId`
+in `processed_messages` before invoking a replaceable `NotificationSender`; the current
+adapter writes a structured log entry. The primary key makes duplicate delivery a
+successful no-op, including when multiple consumer instances race for the same event.
+If handling fails, the database claim rolls back. The consumer exception then rejects
+the message without requeueing it, and RabbitMQ routes it to
+`notification.booking-confirmed.v1.dlq`, preventing an invalid message from forming an
+endless hot loop.
 
 The outbox closes the loss window between the PostgreSQL commit and RabbitMQ publish.
 It deliberately provides at-least-once rather than exactly-once delivery: the process
 can stop after RabbitMQ accepts a message but before `published_at` is stored, so the
-same `eventId` may be published again. Consumer-side idempotency is the next reliability
-step. Published rows are retained for inspection; a later maintenance task will archive
-or delete them according to a retention policy.
+same `eventId` may be published again. The notification inbox makes those repeated
+deliveries safe for the current transactional logging adapter. A real email or SMS call
+still needs provider-side idempotency keyed by `eventId`, or its own dispatch outbox,
+because an external side effect and the local database commit cannot form one atomic
+transaction. Published outbox and processed inbox rows are retained for inspection; a
+later maintenance task will archive or delete them according to a retention policy.
 
 ## Concurrency and expiration
 
@@ -206,8 +213,9 @@ Coverage includes concurrent requests, a deterministic blocked database insert,
 expired-hold replacement, inactive history, confirmed reservations, input validation,
 authentication, authorization and ownership. The booking integration test verifies that
 a successful confirmation creates an unpublished outbox row. Focused publisher tests
-verify ACK and NACK handling. notification-service has a focused listener delegation
-test. Tests run sequentially.
+verify ACK and NACK handling. notification-service verifies duplicate suppression and
+rollback of an inbox claim against a real PostgreSQL Testcontainer. Tests run
+sequentially.
 
 ## Stop
 
@@ -225,9 +233,9 @@ startup; Hibernate uses `ddl-auto=validate` and does not modify the schema.
 Room catalog is a separate service reached through OpenFeign. The client supplies only
 the logical service ID `room-service`; Eureka resolves healthy instances and Spring
 Cloud LoadBalancer chooses one. The public UI client and service client exist in
-Keycloak, but neither is used by an application UI or another service yet. Consumer
-idempotency, outbox retention and gRPC are subsequent steps. Do not expose this
-learning-stage API publicly.
+Keycloak, but neither is used by an application UI or another service yet. Retry policy,
+outbox/inbox retention and gRPC are subsequent steps. Do not expose this learning-stage
+API publicly.
 
 ## Configuration
 
@@ -235,7 +243,8 @@ Local application overrides: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` and
 `KEYCLOAK_ISSUER_URI`. `EUREKA_URL` changes the registry address and
 `EUREKA_INSTANCE_HOSTNAME` changes the hostname advertised by an application service.
 RabbitMQ overrides are `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USERNAME` and
-`RABBITMQ_PASSWORD`.
+`RABBITMQ_PASSWORD`. notification-service datasource overrides are
+`NOTIFICATION_DB_URL`, `NOTIFICATION_DB_USERNAME` and `NOTIFICATION_DB_PASSWORD`.
 Compose does not automatically pass environment variables to an app launched separately
 from IntelliJ. For deployment, explicitly select another
 `SPRING_PROFILES_ACTIVE` value and provide `SPRING_DATASOURCE_URL`,

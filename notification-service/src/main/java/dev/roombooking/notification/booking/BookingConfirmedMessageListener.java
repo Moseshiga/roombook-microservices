@@ -6,14 +6,14 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class BookingConfirmedMessageListener {
-    private final NotificationSender notificationSender;
+    private final BookingNotificationHandler notificationHandler;
 
-    public BookingConfirmedMessageListener(NotificationSender notificationSender) {
-        this.notificationSender = notificationSender;
+    public BookingConfirmedMessageListener(BookingNotificationHandler notificationHandler) {
+        this.notificationHandler = notificationHandler;
     }
 
     @RabbitListener(queues = NotificationMessagingTopology.BOOKING_CONFIRMED_QUEUE)
     public void handle(BookingConfirmedMessage message) {
-        notificationSender.sendBookingConfirmation(message);
+        notificationHandler.handle(message);
     }
 }
