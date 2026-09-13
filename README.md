@@ -8,9 +8,9 @@ Create a temporary room reservation and retrieve it by ID. PostgreSQL protects e
 hourly slot against concurrent reservations, including requests from different JVMs.
 Keycloak authenticates callers; the booking owner comes from the JWT `sub` claim.
 Before creating a hold, booking-service finds room-service through Eureka and verifies
-the requested room through an OpenFeign HTTP call. A successful confirmation publishes
-a versioned event to RabbitMQ after the database transaction commits;
-notification-service consumes it asynchronously.
+the requested room through an OpenFeign HTTP call. A successful confirmation stores a
+versioned integration event in a transactional outbox. A scheduled publisher forwards
+the event to RabbitMQ with retries; notification-service consumes it asynchronously.
 
 Stack: Java 21, Spring Boot 4.1, Spring MVC, Spring Security OAuth2 Resource Server,
 Bean Validation, JPA, PostgreSQL 17, Flyway, Keycloak, Spring Cloud OpenFeign,
@@ -121,20 +121,23 @@ offset (`Z` is UTC). Slots start on whole UTC hours and last exactly one hour.
 - Retrying an already successful POST currently returns `409`; idempotency keys are
   a separate future feature. The API does not yet recover a lost successful response.
 
-## Booking confirmation event
+## Transactional outbox and booking confirmation event
 
-`BookingService.confirm` performs the guarded `PENDING -> CONFIRMED` update and publishes
-an immutable in-process `BookingConfirmedEvent` while the database transaction is still
-active. `BookingConfirmedMessagePublisher` handles it with
-`@TransactionalEventListener(phase = AFTER_COMMIT)`. Therefore a rolled-back transaction
-does not produce a RabbitMQ message and RabbitMQ is not contacted before the database
-commit succeeds.
+`BookingService.confirm` performs the guarded `PENDING -> CONFIRMED` update and inserts
+an `outbox_events` row through the same transaction-bound datasource. PostgreSQL either
+commits both changes or rolls both back. The request does not contact RabbitMQ.
 
-The listener maps the domain event to the `booking.confirmed.v1` integration contract
-and sends JSON to the durable `roombook.events` topic exchange using the
-`booking.confirmed.v1` routing key. The message contains a unique `eventId`, occurrence
-time, booking and room IDs, the Keycloak subject, and the one-hour interval. It contains
-no access token or other authentication credentials.
+The outbox row contains the `booking.confirmed.v1` event type, aggregate ID, occurrence
+time, retry metadata and a JSON payload. The payload is the public integration contract:
+it contains a unique `eventId`, booking and room IDs, the Keycloak subject and the
+one-hour interval. It contains no access token or other authentication credentials.
+
+`OutboxMessagePublisher` polls up to 50 due rows every five seconds. ShedLock permits
+only one booking-service instance to run the publisher at a time. For each row it sends
+the JSON contract to the durable `roombook.events` topic exchange using the event type
+as routing key. Publisher confirms and mandatory returns are enabled; `published_at` is
+set only after RabbitMQ acknowledges the message and confirms that it was routable.
+Failures retain the row and move `next_attempt_at` using bounded exponential backoff.
 
 notification-service owns the durable `notification.booking-confirmed.v1` queue and
 binding. Its `@RabbitListener` deserializes the JSON into its own copy of the contract
@@ -143,12 +146,12 @@ log entry. A consumer exception rejects the message without requeueing it. Rabbi
 routes it to `notification.booking-confirmed.v1.dlq`, preventing an invalid message from
 forming an endless hot loop.
 
-This stage deliberately demonstrates the dual-write gap. `AFTER_COMMIT` orders the two
-actions, but it cannot make PostgreSQL and RabbitMQ one atomic transaction. If RabbitMQ
-is unavailable after PostgreSQL commits, the publisher logs the failure and the
-confirmation remains valid, but the notification can be lost. The next messaging stage
-will persist an outbox row in the same PostgreSQL transaction, publish it later with
-retries, and make the consumer idempotent by `eventId`.
+The outbox closes the loss window between the PostgreSQL commit and RabbitMQ publish.
+It deliberately provides at-least-once rather than exactly-once delivery: the process
+can stop after RabbitMQ accepts a message but before `published_at` is stored, so the
+same `eventId` may be published again. Consumer-side idempotency is the next reliability
+step. Published rows are retained for inspection; a later maintenance task will archive
+or delete them according to a retention policy.
 
 ## Concurrency and expiration
 
@@ -201,10 +204,10 @@ a deterministic test JWT decoder. They exercise the HTTP server, migrations, JWT
 mapping and real database constraints. The local development database is not touched.
 Coverage includes concurrent requests, a deterministic blocked database insert,
 expired-hold replacement, inactive history, confirmed reservations, input validation,
-authentication, authorization and ownership. The booking test replaces RabbitTemplate
-with a mock and verifies that a successful committed confirmation emits the integration
-contract. notification-service has a focused listener delegation test. Tests run
-sequentially.
+authentication, authorization and ownership. The booking integration test verifies that
+a successful confirmation creates an unpublished outbox row. Focused publisher tests
+verify ACK and NACK handling. notification-service has a focused listener delegation
+test. Tests run sequentially.
 
 ## Stop
 
@@ -222,8 +225,8 @@ startup; Hibernate uses `ddl-auto=validate` and does not modify the schema.
 Room catalog is a separate service reached through OpenFeign. The client supplies only
 the logical service ID `room-service`; Eureka resolves healthy instances and Spring
 Cloud LoadBalancer chooses one. The public UI client and service client exist in
-Keycloak, but neither is used by an application UI or another service yet. Reliable
-outbox delivery, consumer idempotency and gRPC are subsequent steps. Do not expose this
+Keycloak, but neither is used by an application UI or another service yet. Consumer
+idempotency, outbox retention and gRPC are subsequent steps. Do not expose this
 learning-stage API publicly.
 
 ## Configuration

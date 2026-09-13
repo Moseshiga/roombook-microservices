@@ -1,8 +1,8 @@
 package dev.roombooking.booking;
 
 import dev.roombooking.booking.reservation.BookingService;
-import dev.roombooking.booking.messaging.BookingConfirmedMessage;
-import dev.roombooking.booking.messaging.BookingMessagingTopology;
+import dev.roombooking.booking.reservation.BookingConfirmedEvent;
+import dev.roombooking.booking.reservation.BookingConfirmedEventStore;
 import dev.roombooking.booking.room.RoomCatalogClient;
 import dev.roombooking.booking.room.RoomCatalogResponse;
 import feign.FeignException;
@@ -17,7 +17,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.amqp.core.MessagePostProcessor;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -32,6 +31,8 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -56,15 +57,14 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
-import static org.mockito.BDDMockito.then;
-import static org.mockito.Mockito.clearInvocations;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "booking.expiration.cleanup.enabled=false",
+                "booking.outbox.publisher.enabled=false",
                 "eureka.client.enabled=false"
         })
 @ActiveProfiles("test")
@@ -94,14 +94,16 @@ class BookingServiceApplicationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired DataSource dataSource;
     @Autowired BookingService bookingService;
+    @Autowired BookingConfirmedEventStore bookingConfirmedEventStore;
+    @Autowired PlatformTransactionManager transactionManager;
     @Autowired LockProvider lockProvider;
     @MockitoBean RoomCatalogClient roomCatalogClient;
     @MockitoBean RabbitTemplate rabbitTemplate;
 
     @BeforeEach
     void clearTestDatabase() {
+        jdbc.update("DELETE FROM outbox_events");
         jdbc.update("DELETE FROM bookings");
-        clearInvocations(rabbitTemplate);
         given(roomCatalogClient.getActiveRoom(any())).willAnswer(invocation -> {
             UUID roomId = invocation.getArgument(0);
             return new RoomCatalogResponse(roomId, true);
@@ -173,11 +175,30 @@ class BookingServiceApplicationTests {
         assertThat(postWithoutBody("/api/bookings/" + id + "/cancel").statusCode()).isEqualTo(409);
         assertThat(mapper.readTree(get("/api/bookings/" + id).body()).get("status").asText())
                 .isEqualTo("CONFIRMED");
-        then(rabbitTemplate).should().convertAndSend(
-                eq(BookingMessagingTopology.EVENTS_EXCHANGE),
-                eq(BookingMessagingTopology.BOOKING_CONFIRMED_ROUTING_KEY),
-                any(BookingConfirmedMessage.class),
-                any(MessagePostProcessor.class));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_events", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT aggregate_id FROM outbox_events", UUID.class)).isEqualTo(id);
+        assertThat(jdbc.queryForObject("SELECT event_type FROM outbox_events", String.class))
+                .isEqualTo("booking.confirmed.v1");
+        assertThat(jdbc.queryForObject("SELECT published_at IS NULL FROM outbox_events", Boolean.class)).isTrue();
+        JsonNode payload = mapper.readTree(
+                jdbc.queryForObject("SELECT payload::text FROM outbox_events", String.class));
+        assertThat(payload.get("bookingId").asText()).isEqualTo(id.toString());
+        assertThat(payload.get("eventId").asText()).isNotBlank();
+    }
+
+    @Test
+    void rollsBackOutboxEventTogetherWithTheBusinessTransaction() {
+        var event = new BookingConfirmedEvent(
+                UUID.randomUUID(), NOW, UUID.randomUUID(), ROOM, ALICE_SUBJECT,
+                Instant.parse(SLOT), Instant.parse("2030-01-02T13:00:00Z"));
+        var transaction = new TransactionTemplate(transactionManager);
+
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
+            bookingConfirmedEventStore.append(event);
+            throw new IllegalStateException("force rollback");
+        })).isInstanceOf(IllegalStateException.class);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_events", Integer.class)).isZero();
     }
 
     @Test

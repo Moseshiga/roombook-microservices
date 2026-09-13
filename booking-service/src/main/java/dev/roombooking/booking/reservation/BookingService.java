@@ -1,7 +1,6 @@
 package dev.roombooking.booking.reservation;
 
 import dev.roombooking.booking.room.RoomCatalogGateway;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,14 +17,14 @@ public class BookingService {
     private static final Duration HOLD_DURATION = Duration.ofMinutes(10);
     private final BookingRepository repository;
     private final RoomCatalogGateway roomCatalogGateway;
-    private final ApplicationEventPublisher eventPublisher;
+    private final BookingConfirmedEventStore eventStore;
     private final Clock clock;
 
     public BookingService(BookingRepository repository, RoomCatalogGateway roomCatalogGateway,
-                          ApplicationEventPublisher eventPublisher, Clock clock) {
+                          BookingConfirmedEventStore eventStore, Clock clock) {
         this.repository = repository;
         this.roomCatalogGateway = roomCatalogGateway;
-        this.eventPublisher = eventPublisher;
+        this.eventStore = eventStore;
         this.clock = clock;
     }
 
@@ -64,7 +63,7 @@ public class BookingService {
         requireOwnerOrAdministrator(requireBooking(id), actor);
         if (repository.confirmPending(id, now) == 1) {
             Booking confirmedBooking = requireBooking(id);
-            eventPublisher.publishEvent(BookingConfirmedEvent.from(confirmedBooking, now));
+            eventStore.append(BookingConfirmedEvent.from(confirmedBooking, now));
             return BookingResponse.from(confirmedBooking, now);
         }
         throw transitionRejected(id, "confirmed", now);
