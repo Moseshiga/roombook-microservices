@@ -16,6 +16,19 @@ to the durable `roombook.events` topic exchange. Rejected messages are routed to
 `notification.booking-confirmed.v1.dlq` through `roombook.dead-letter` instead of being
 requeued forever.
 
+Listener retry is enabled for handler failures. After the initial delivery, Spring AMQP
+makes up to three in-process retries with exponential delays of one, two and four
+seconds. Each failed call rolls back the `processed_messages` claim. A successful retry
+commits the claim and the container acknowledges the original RabbitMQ delivery. When
+all attempts fail, the default `RejectAndDontRequeueRecoverer` rejects the message and
+the broker dead-letters it.
+
+This stateless retry keeps the original delivery unacknowledged and occupies one
+consumer thread during each delay. With local concurrency set to one, later messages
+wait behind the failing message. If the process stops during retry, RabbitMQ requeues
+the unacknowledged delivery and the in-memory retry count starts again in the next
+consumer. Broker-based delayed retry queues are a possible future scaling improvement.
+
 Run these commands from the repository root with Java 21:
 
 ```powershell

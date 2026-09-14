@@ -146,9 +146,12 @@ in `processed_messages` before invoking a replaceable `NotificationSender`; the 
 adapter writes a structured log entry. The primary key makes duplicate delivery a
 successful no-op, including when multiple consumer instances race for the same event.
 If handling fails, the database claim rolls back. The consumer exception then rejects
-the message without requeueing it, and RabbitMQ routes it to
-`notification.booking-confirmed.v1.dlq`, preventing an invalid message from forming an
-endless hot loop.
+the transaction and Spring AMQP retries the listener up to three times with exponential
+backoff. A successful retry commits the claim and acknowledges the original delivery.
+After the attempts are exhausted, `RejectAndDontRequeueRecoverer` rejects the delivery
+and RabbitMQ routes it to `notification.booking-confirmed.v1.dlq`, preventing an invalid
+message from forming an endless hot loop. These retries run in the consumer process;
+the delivery stays unacknowledged and the listener thread waits during backoff.
 
 The outbox closes the loss window between the PostgreSQL commit and RabbitMQ publish.
 It deliberately provides at-least-once rather than exactly-once delivery: the process
@@ -214,8 +217,9 @@ expired-hold replacement, inactive history, confirmed reservations, input valida
 authentication, authorization and ownership. The booking integration test verifies that
 a successful confirmation creates an unpublished outbox row. Focused publisher tests
 verify ACK and NACK handling. notification-service verifies duplicate suppression and
-rollback of an inbox claim against a real PostgreSQL Testcontainer. Tests run
-sequentially.
+rollback of an inbox claim against a real PostgreSQL Testcontainer. Its RabbitMQ
+integration tests verify recovery after transient failures and dead-letter routing after
+retry exhaustion. Tests run sequentially.
 
 ## Stop
 
@@ -233,9 +237,8 @@ startup; Hibernate uses `ddl-auto=validate` and does not modify the schema.
 Room catalog is a separate service reached through OpenFeign. The client supplies only
 the logical service ID `room-service`; Eureka resolves healthy instances and Spring
 Cloud LoadBalancer chooses one. The public UI client and service client exist in
-Keycloak, but neither is used by an application UI or another service yet. Retry policy,
-outbox/inbox retention and gRPC are subsequent steps. Do not expose this learning-stage
-API publicly.
+Keycloak, but neither is used by an application UI or another service yet. Outbox/inbox
+retention and gRPC are subsequent steps. Do not expose this learning-stage API publicly.
 
 ## Configuration
 
