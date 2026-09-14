@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package roombook.profile.v1;
+
+option java_multiple_files = true;
+option java_package = "dev.roombooking.profile.grpc.v1";
+option java_outer_classname = "UserProfileProto";
+
+// Internal synchronous API used by notification-service.
+service UserProfileService {
+  rpc GetNotificationProfile(GetNotificationProfileRequest)
+      returns (NotificationProfileResponse);
+}
+
+message GetNotificationProfileRequest {
+  string user_id = 1;
+}
+
+message NotificationProfileResponse {
+  string user_id = 1;
+  string email = 2;
+  string locale = 3;
+  bool notifications_enabled = 4;
+}

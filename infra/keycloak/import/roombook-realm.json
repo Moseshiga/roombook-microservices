@@ -7,7 +7,8 @@
   "roles": {
     "realm": [
       {"name": "USER", "description": "Can create and manage own bookings"},
-      {"name": "ADMIN", "description": "Can manage any booking"}
+      {"name": "ADMIN", "description": "Can manage any booking"},
+      {"name": "PROFILE_READ", "description": "Allows an internal service to read notification profiles"}
     ]
   },
   "clients": [
@@ -33,6 +34,17 @@
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "secret": "${ROOMBOOK_SERVICE_CLIENT_SECRET}"
+    },
+    {
+      "clientId": "notification-service",
+      "name": "Notification service gRPC client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "secret": "${NOTIFICATION_SERVICE_CLIENT_SECRET}"
     }
   ],
   "users": [
@@ -53,6 +65,12 @@
       "lastName": "User",
       "realmRoles": ["USER", "ADMIN"],
       "credentials": [{"type": "password", "value": "${ROOMBOOK_ADMIN_PASSWORD}", "temporary": false}]
+    },
+    {
+      "username": "service-account-notification-service",
+      "enabled": true,
+      "serviceAccountClientId": "notification-service",
+      "realmRoles": ["PROFILE_READ"]
     }
   ]
 }

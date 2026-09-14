@@ -1,6 +1,8 @@
 package dev.roombooking.notification.booking;
 
 import dev.roombooking.notification.messaging.NotificationMessagingTopology;
+import dev.roombooking.notification.profile.NotificationProfile;
+import dev.roombooking.notification.profile.NotificationProfileGateway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.core.AmqpAdmin;
@@ -26,9 +28,11 @@ import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.BDDMockito.given;
 
 @SpringBootTest(properties = {
         "eureka.client.enabled=false",
+        "spring.security.oauth2.client.registration.profile-service.client-secret=test-secret",
         "spring.rabbitmq.listener.simple.retry.max-retries=2",
         "spring.rabbitmq.listener.simple.retry.initial-interval=10ms",
         "spring.rabbitmq.listener.simple.retry.multiplier=1",
@@ -61,10 +65,13 @@ class BookingNotificationRetryTests {
     @Autowired AmqpAdmin rabbitAdmin;
     @Autowired JdbcTemplate jdbc;
     @MockitoBean NotificationSender notificationSender;
+    @MockitoBean NotificationProfileGateway profiles;
 
     @BeforeEach
     void clearState() {
         jdbc.update("DELETE FROM processed_messages");
+        given(profiles.getRequired("keycloak-subject"))
+                .willReturn(new NotificationProfile("keycloak-subject", "user@example.com", "en", true));
         rabbitAdmin.purgeQueue(NotificationMessagingTopology.BOOKING_CONFIRMED_QUEUE);
         rabbitAdmin.purgeQueue(NotificationMessagingTopology.BOOKING_CONFIRMED_DEAD_LETTER_QUEUE);
     }
@@ -75,12 +82,14 @@ class BookingNotificationRetryTests {
         doThrow(new IllegalStateException("provider temporarily unavailable"))
                 .doThrow(new IllegalStateException("provider temporarily unavailable"))
                 .doNothing()
-                .when(notificationSender).sendBookingConfirmation(message);
+                .when(notificationSender).sendBookingConfirmation(message,
+                        new NotificationProfile("keycloak-subject", "user@example.com", "en", true));
 
         publish(message);
 
         await(() -> processedMessageCount(message.eventId()) == 1);
-        verify(notificationSender, times(3)).sendBookingConfirmation(message);
+        verify(notificationSender, times(3)).sendBookingConfirmation(message,
+                new NotificationProfile("keycloak-subject", "user@example.com", "en", true));
         assertThat(rabbitAdmin.getQueueInfo(NotificationMessagingTopology.BOOKING_CONFIRMED_QUEUE)
                 .getMessageCount()).isZero();
         assertThat(rabbitAdmin.getQueueInfo(NotificationMessagingTopology.BOOKING_CONFIRMED_DEAD_LETTER_QUEUE)
@@ -91,14 +100,16 @@ class BookingNotificationRetryTests {
     void deadLettersMessageAfterRetriesAreExhausted() {
         BookingConfirmedMessage message = message();
         doThrow(new IllegalStateException("provider unavailable"))
-                .when(notificationSender).sendBookingConfirmation(message);
+                .when(notificationSender).sendBookingConfirmation(message,
+                        new NotificationProfile("keycloak-subject", "user@example.com", "en", true));
 
         publish(message);
 
         Message deadLetter = rabbitTemplate.receive(
                 NotificationMessagingTopology.BOOKING_CONFIRMED_DEAD_LETTER_QUEUE, 5_000);
         assertThat(deadLetter).isNotNull();
-        verify(notificationSender, times(3)).sendBookingConfirmation(message);
+        verify(notificationSender, times(3)).sendBookingConfirmation(message,
+                new NotificationProfile("keycloak-subject", "user@example.com", "en", true));
         assertThat(processedMessageCount(message.eventId())).isZero();
     }
 

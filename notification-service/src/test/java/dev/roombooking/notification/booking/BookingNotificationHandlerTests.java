@@ -1,5 +1,7 @@
 package dev.roombooking.notification.booking;
 
+import dev.roombooking.notification.profile.NotificationProfile;
+import dev.roombooking.notification.profile.NotificationProfileGateway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,9 +27,11 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.BDDMockito.given;
 
 @SpringBootTest(properties = {
         "eureka.client.enabled=false",
+        "spring.security.oauth2.client.registration.profile-service.client-secret=test-secret",
         "spring.rabbitmq.dynamic=false",
         "spring.rabbitmq.listener.simple.auto-startup=false",
         "notification.inbox.cleanup.enabled=false"
@@ -50,10 +54,13 @@ class BookingNotificationHandlerTests {
     @Autowired ProcessedMessageRetentionService retentionService;
     @Autowired JdbcTemplate jdbc;
     @MockitoBean NotificationSender notificationSender;
+    @MockitoBean NotificationProfileGateway profiles;
 
     @BeforeEach
     void clearInbox() {
         jdbc.update("DELETE FROM processed_messages");
+        given(profiles.getRequired("keycloak-subject"))
+                .willReturn(new NotificationProfile("keycloak-subject", "user@example.com", "en", true));
     }
 
     @Test
@@ -63,7 +70,8 @@ class BookingNotificationHandlerTests {
         handler.handle(message);
         handler.handle(message);
 
-        verify(notificationSender).sendBookingConfirmation(message);
+        verify(notificationSender).sendBookingConfirmation(message,
+                new NotificationProfile("keycloak-subject", "user@example.com", "en", true));
         verifyNoMoreInteractions(notificationSender);
         assertThat(processedMessageCount(message.eventId())).isOne();
     }
@@ -73,7 +81,8 @@ class BookingNotificationHandlerTests {
         BookingConfirmedMessage message = message();
         doThrow(new IllegalStateException("delivery failed"))
                 .doNothing()
-                .when(notificationSender).sendBookingConfirmation(message);
+                .when(notificationSender).sendBookingConfirmation(message,
+                        new NotificationProfile("keycloak-subject", "user@example.com", "en", true));
 
         assertThatThrownBy(() -> handler.handle(message))
                 .isInstanceOf(IllegalStateException.class)
@@ -82,7 +91,8 @@ class BookingNotificationHandlerTests {
 
         handler.handle(message);
 
-        verify(notificationSender, times(2)).sendBookingConfirmation(message);
+        verify(notificationSender, times(2)).sendBookingConfirmation(message,
+                new NotificationProfile("keycloak-subject", "user@example.com", "en", true));
         assertThat(processedMessageCount(message.eventId())).isOne();
     }
 
@@ -95,7 +105,8 @@ class BookingNotificationHandlerTests {
             firstHandlerEntered.countDown();
             assertThat(releaseFirstHandler.await(5, TimeUnit.SECONDS)).isTrue();
             return null;
-        }).when(notificationSender).sendBookingConfirmation(message);
+        }).when(notificationSender).sendBookingConfirmation(message,
+                new NotificationProfile("keycloak-subject", "user@example.com", "en", true));
 
         try (var consumers = Executors.newFixedThreadPool(2)) {
             var first = consumers.submit(() -> handler.handle(message));
@@ -109,7 +120,8 @@ class BookingNotificationHandlerTests {
             releaseFirstHandler.countDown();
         }
 
-        verify(notificationSender).sendBookingConfirmation(message);
+        verify(notificationSender).sendBookingConfirmation(message,
+                new NotificationProfile("keycloak-subject", "user@example.com", "en", true));
         assertThat(processedMessageCount(message.eventId())).isOne();
     }
 

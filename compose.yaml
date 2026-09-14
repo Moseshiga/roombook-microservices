@@ -43,6 +43,9 @@ services:
         if ! psql -h postgres -U booking -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'notifications_db'" | grep -q 1; then
           psql -h postgres -U booking -d postgres -c "CREATE DATABASE notifications_db OWNER booking;"
         fi
+        if ! psql -h postgres -U booking -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'profiles_db'" | grep -q 1; then
+          psql -h postgres -U booking -d postgres -c "CREATE DATABASE profiles_db OWNER booking;"
+        fi
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.7.3
@@ -61,6 +64,7 @@ services:
       ROOMBOOK_ALICE_PASSWORD: ${ROOMBOOK_ALICE_PASSWORD:?Set ROOMBOOK_ALICE_PASSWORD in .env}
       ROOMBOOK_ADMIN_PASSWORD: ${ROOMBOOK_ADMIN_PASSWORD:?Set ROOMBOOK_ADMIN_PASSWORD in .env}
       ROOMBOOK_SERVICE_CLIENT_SECRET: ${ROOMBOOK_SERVICE_CLIENT_SECRET:?Set ROOMBOOK_SERVICE_CLIENT_SECRET in .env}
+      NOTIFICATION_SERVICE_CLIENT_SECRET: ${NOTIFICATION_SERVICE_CLIENT_SECRET:?Set NOTIFICATION_SERVICE_CLIENT_SECRET in .env}
     command: ["start-dev", "--import-realm"]
     ports:
       - "127.0.0.1:8081:8080"

@@ -18,9 +18,11 @@
     <description>Parent and aggregator for the RoomBook microservices learning project</description>
 
     <modules>
+        <module>profile-grpc-contract</module>
         <module>booking-service</module>
         <module>room-service</module>
         <module>notification-service</module>
+        <module>profile-service</module>
         <module>discovery-server</module>
     </modules>
 
