@@ -29,6 +29,20 @@ wait behind the failing message. If the process stops during retry, RabbitMQ req
 the unacknowledged delivery and the in-memory retry count starts again in the next
 consumer. Broker-based delayed retry queues are a possible future scaling improvement.
 
+## Retention cleanup
+
+Every hour, a ShedLock-protected task deletes at most 500 `processed_messages` rows
+strictly older than 90 days. The `(processed_at, event_id)` index supports the ordered
+batch lookup. Multiple service instances schedule the task, but the lock stored in this
+service's database lets only one execute each invocation.
+
+Deleting an inbox row also removes the evidence that its `eventId` was processed. A
+message replayed after 90 days can therefore invoke the notification adapter again.
+Operators must replay DLQ messages within the inbox retention window, or increase
+`notification.inbox.cleanup.retention` to match the required replay horizon. Configure
+the interval, retention and batch size through `notification.inbox.cleanup.*`; cleanup
+can be disabled with `notification.inbox.cleanup.enabled=false`.
+
 Run these commands from the repository root with Java 21:
 
 ```powershell

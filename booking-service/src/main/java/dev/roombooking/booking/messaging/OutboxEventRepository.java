@@ -47,4 +47,22 @@ interface OutboxEventRepository extends Repository<OutboxEvent, UUID> {
     int recordFailure(@Param("id") UUID id,
                       @Param("nextAttemptAt") Instant nextAttemptAt,
                       @Param("error") String error);
+
+    @Query("""
+            SELECT event.id
+            FROM OutboxEvent event
+            WHERE event.publishedAt IS NOT NULL
+              AND event.publishedAt < :cutoff
+            ORDER BY event.publishedAt, event.id
+            """)
+    List<UUID> findPublishedBefore(@Param("cutoff") Instant cutoff, Pageable pageable);
+
+    @Modifying
+    @Query("""
+            DELETE FROM OutboxEvent event
+            WHERE event.id IN :ids
+              AND event.publishedAt IS NOT NULL
+              AND event.publishedAt < :cutoff
+            """)
+    int deletePublishedBefore(@Param("ids") List<UUID> ids, @Param("cutoff") Instant cutoff);
 }

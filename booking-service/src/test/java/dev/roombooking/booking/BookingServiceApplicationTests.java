@@ -3,6 +3,7 @@ package dev.roombooking.booking;
 import dev.roombooking.booking.reservation.BookingService;
 import dev.roombooking.booking.reservation.BookingConfirmedEvent;
 import dev.roombooking.booking.reservation.BookingConfirmedEventStore;
+import dev.roombooking.booking.messaging.OutboxRetentionService;
 import dev.roombooking.booking.room.RoomCatalogClient;
 import dev.roombooking.booking.room.RoomCatalogResponse;
 import feign.FeignException;
@@ -65,6 +66,7 @@ import static org.mockito.BDDMockito.given;
         properties = {
                 "booking.expiration.cleanup.enabled=false",
                 "booking.outbox.publisher.enabled=false",
+                "booking.outbox.cleanup.enabled=false",
                 "eureka.client.enabled=false"
         })
 @ActiveProfiles("test")
@@ -95,6 +97,7 @@ class BookingServiceApplicationTests {
     @Autowired DataSource dataSource;
     @Autowired BookingService bookingService;
     @Autowired BookingConfirmedEventStore bookingConfirmedEventStore;
+    @Autowired OutboxRetentionService outboxRetentionService;
     @Autowired PlatformTransactionManager transactionManager;
     @Autowired LockProvider lockProvider;
     @MockitoBean RoomCatalogClient roomCatalogClient;
@@ -199,6 +202,26 @@ class BookingServiceApplicationTests {
         })).isInstanceOf(IllegalStateException.class);
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_events", Integer.class)).isZero();
+    }
+
+    @Test
+    void outboxRetentionDeletesOnlyPublishedEventsStrictlyBeforeTheCutoffInBatches() {
+        Instant cutoff = NOW.minus(Duration.ofDays(30));
+        UUID firstExpired = insertOutboxEvent(cutoff.minusSeconds(2), cutoff.minusSeconds(2));
+        UUID secondExpired = insertOutboxEvent(cutoff.minusSeconds(1), cutoff.minusSeconds(1));
+        UUID exactlyAtCutoff = insertOutboxEvent(cutoff.minusSeconds(10), cutoff);
+        UUID recent = insertOutboxEvent(cutoff, NOW.minus(Duration.ofDays(1)));
+        UUID unpublished = insertOutboxEvent(cutoff.minus(Duration.ofDays(1)), null);
+
+        assertThat(outboxRetentionService.deletePublishedBefore(cutoff, 1)).isOne();
+        assertThat(outboxRetentionService.deletePublishedBefore(cutoff, 1)).isOne();
+        assertThat(outboxRetentionService.deletePublishedBefore(cutoff, 1)).isZero();
+
+        assertThat(outboxEventExists(firstExpired)).isFalse();
+        assertThat(outboxEventExists(secondExpired)).isFalse();
+        assertThat(outboxEventExists(exactlyAtCutoff)).isTrue();
+        assertThat(outboxEventExists(recent)).isTrue();
+        assertThat(outboxEventExists(unpublished)).isTrue();
     }
 
     @Test
@@ -418,6 +441,25 @@ class BookingServiceApplicationTests {
 
     private String statusOf(UUID id) {
         return jdbc.queryForObject("SELECT status FROM bookings WHERE id = ?", String.class, id);
+    }
+
+    private UUID insertOutboxEvent(Instant occurredAt, Instant publishedAt) {
+        UUID id = UUID.randomUUID();
+        jdbc.update("""
+                        INSERT INTO outbox_events (
+                            id, aggregate_type, aggregate_id, event_type, payload,
+                            occurred_at, published_at, attempts, next_attempt_at
+                        ) VALUES (?, 'BOOKING', ?, 'booking.confirmed.v1', CAST('{}' AS jsonb),
+                                  CAST(? AS timestamptz), CAST(? AS timestamptz), 0, CAST(? AS timestamptz))
+                        """,
+                id, UUID.randomUUID(), occurredAt.toString(),
+                publishedAt == null ? null : publishedAt.toString(), occurredAt.toString());
+        return id;
+    }
+
+    private boolean outboxEventExists(UUID id) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM outbox_events WHERE id = ?)", Boolean.class, id));
     }
 
     private String body(UUID room, UUID user, String slot) {

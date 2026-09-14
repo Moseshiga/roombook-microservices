@@ -32,7 +32,8 @@ import static org.mockito.Mockito.verify;
         "spring.rabbitmq.listener.simple.retry.max-retries=2",
         "spring.rabbitmq.listener.simple.retry.initial-interval=10ms",
         "spring.rabbitmq.listener.simple.retry.multiplier=1",
-        "spring.rabbitmq.listener.simple.retry.max-interval=10ms"
+        "spring.rabbitmq.listener.simple.retry.max-interval=10ms",
+        "notification.inbox.cleanup.enabled=false"
 })
 @Testcontainers
 class BookingNotificationRetryTests {

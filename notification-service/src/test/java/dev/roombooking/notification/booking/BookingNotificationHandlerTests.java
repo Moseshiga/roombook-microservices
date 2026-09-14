@@ -29,7 +29,8 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 @SpringBootTest(properties = {
         "eureka.client.enabled=false",
         "spring.rabbitmq.dynamic=false",
-        "spring.rabbitmq.listener.simple.auto-startup=false"
+        "spring.rabbitmq.listener.simple.auto-startup=false",
+        "notification.inbox.cleanup.enabled=false"
 })
 @Testcontainers
 class BookingNotificationHandlerTests {
@@ -46,6 +47,7 @@ class BookingNotificationHandlerTests {
     }
 
     @Autowired BookingNotificationHandler handler;
+    @Autowired ProcessedMessageRetentionService retentionService;
     @Autowired JdbcTemplate jdbc;
     @MockitoBean NotificationSender notificationSender;
 
@@ -111,9 +113,37 @@ class BookingNotificationHandlerTests {
         assertThat(processedMessageCount(message.eventId())).isOne();
     }
 
+    @Test
+    void inboxRetentionDeletesOnlyMessagesStrictlyBeforeTheCutoffInBatches() {
+        Instant cutoff = Instant.parse("2030-01-01T00:00:00Z");
+        UUID firstExpired = insertProcessedMessage(cutoff.minusSeconds(2));
+        UUID secondExpired = insertProcessedMessage(cutoff.minusSeconds(1));
+        UUID exactlyAtCutoff = insertProcessedMessage(cutoff);
+        UUID recent = insertProcessedMessage(cutoff.plusSeconds(1));
+
+        assertThat(retentionService.deleteProcessedBefore(cutoff, 1)).isOne();
+        assertThat(retentionService.deleteProcessedBefore(cutoff, 1)).isOne();
+        assertThat(retentionService.deleteProcessedBefore(cutoff, 1)).isZero();
+
+        assertThat(processedMessageCount(firstExpired)).isZero();
+        assertThat(processedMessageCount(secondExpired)).isZero();
+        assertThat(processedMessageCount(exactlyAtCutoff)).isOne();
+        assertThat(processedMessageCount(recent)).isOne();
+    }
+
     private int processedMessageCount(UUID eventId) {
         return jdbc.queryForObject(
                 "SELECT count(*) FROM processed_messages WHERE event_id = ?", Integer.class, eventId);
+    }
+
+    private UUID insertProcessedMessage(Instant processedAt) {
+        UUID eventId = UUID.randomUUID();
+        jdbc.update("""
+                        INSERT INTO processed_messages (event_id, event_type, processed_at)
+                        VALUES (?, 'booking.confirmed.v1', CAST(? AS timestamptz))
+                        """,
+                eventId, processedAt.toString());
+        return eventId;
     }
 
     private BookingConfirmedMessage message() {

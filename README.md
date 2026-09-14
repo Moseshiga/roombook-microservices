@@ -161,7 +161,16 @@ deliveries safe for the current transactional logging adapter. A real email or S
 still needs provider-side idempotency keyed by `eventId`, or its own dispatch outbox,
 because an external side effect and the local database commit cannot form one atomic
 transaction. Published outbox and processed inbox rows are retained for inspection; a
-later maintenance task will archive or delete them according to a retention policy.
+pair of hourly ShedLock-protected maintenance tasks deletes them in bounded batches.
+
+Published outbox rows are retained for 30 days. The cleanup query never selects an
+unpublished row and repeats that condition in the delete, so events awaiting delivery
+are preserved regardless of age. Processed inbox rows are retained for 90 days. After
+an inbox row is removed, replaying that old `eventId` can invoke the consumer again;
+therefore the inbox retention period defines the supported deduplication and DLQ replay
+horizon. Both tables have retention indexes, and each invocation deletes at most 500
+rows to avoid a large long-running transaction. The policies are configured through
+`booking.outbox.cleanup.*` and `notification.inbox.cleanup.*`.
 
 ## Concurrency and expiration
 
@@ -237,8 +246,9 @@ startup; Hibernate uses `ddl-auto=validate` and does not modify the schema.
 Room catalog is a separate service reached through OpenFeign. The client supplies only
 the logical service ID `room-service`; Eureka resolves healthy instances and Spring
 Cloud LoadBalancer chooses one. The public UI client and service client exist in
-Keycloak, but neither is used by an application UI or another service yet. Outbox/inbox
-retention and gRPC are subsequent steps. Do not expose this learning-stage API publicly.
+Keycloak, but neither is used by an application UI or another service yet. HTTP request
+idempotency and gRPC are subsequent steps. Do not expose this learning-stage API
+publicly.
 
 ## Configuration
 
