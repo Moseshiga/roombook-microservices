@@ -11,6 +11,8 @@ Before creating a hold, booking-service finds room-service through Eureka and ve
 the requested room through an OpenFeign HTTP call. A successful confirmation stores a
 versioned integration event in a transactional outbox. A scheduled publisher forwards
 the event to RabbitMQ with retries; notification-service consumes it asynchronously.
+Booking creation accepts an idempotency key, so a client can safely repeat a request
+after a timeout without creating a second reservation.
 
 Stack: Java 21, Spring Boot 4.1, Spring MVC, Spring Security OAuth2 Resource Server,
 Bean Validation, JPA, PostgreSQL 17, Flyway, Keycloak, Spring Cloud OpenFeign,
@@ -81,7 +83,7 @@ Spring profiles use the learning-only fallback `roombook_local`.
 
 | Method | Path | Result |
 | --- | --- | --- |
-| POST | `/api/bookings` | `201 Created`, reservation JSON and `Location` header |
+| POST | `/api/bookings` | `201 Created`; an idempotent replay returns `200 OK` and the same reservation |
 | GET | `/api/bookings/{id}` | `200 OK`, reservation JSON; `404` if absent |
 | POST | `/api/bookings/{id}/confirm` | `200 OK` for a non-expired `PENDING` reservation |
 | POST | `/api/bookings/{id}/cancel` | `200 OK` for a non-expired `PENDING` reservation |
@@ -101,6 +103,14 @@ $body = @{
     roomId = '11111111-1111-1111-1111-111111111111'
     slotStart = $slotStart
 } | ConvertTo-Json
+
+$headers = @{
+    Authorization = "Bearer $accessToken"
+    'Idempotency-Key' = [guid]::NewGuid().ToString()
+}
+
+Invoke-RestMethod -Method Post -Uri 'http://localhost:8080/api/bookings' `
+    -Headers $headers -ContentType 'application/json' -Body $body
 ```
 
 The response contains `id`, `roomId`, `userId`, `slotStart`, `slotEnd`, `status`,
@@ -118,8 +128,25 @@ offset (`Z` is UTC). Slots start on whole UTC hours and last exactly one hour.
 - A hold lasts ten minutes, capped at the slot start if it is less than ten minutes away.
 - Confirmation and cancellation are competing atomic state transitions. Only an
   unexpired `PENDING` booking can change; all other states return `409`.
-- Retrying an already successful POST currently returns `409`; idempotency keys are
-  a separate future feature. The API does not yet recover a lost successful response.
+
+`POST /api/bookings` requires a visible ASCII `Idempotency-Key` of at most 128
+characters. The client creates one key for one logical booking operation and reuses it
+for every retry of that operation. The first successful request returns `201`; a retry
+by the same authenticated user with the same key, room and slot returns `200`, the same
+`bookingId` and the same `Location`. Reusing that key with another room or slot returns
+`409`. Different users have independent key namespaces.
+
+The service first claims `(user_id, idempotency_key)` with PostgreSQL `INSERT ... ON
+CONFLICT DO NOTHING`. The claim, room hold and link to the resulting booking share one
+database transaction. Concurrent retries therefore wait on the database uniqueness
+constraint and observe one committed result. If room validation or booking creation
+fails, the claim rolls back too and does not leave a stuck key. The active-slot unique
+index remains separate: it protects the room schedule, while the idempotency record
+identifies a repeated client command.
+
+This learning version retains successful idempotency records indefinitely. A production
+API should publish and enforce a retention period as part of its contract; once a key
+expires, the client can no longer rely on replaying it to recover the original result.
 
 ## Transactional outbox and booking confirmation event
 

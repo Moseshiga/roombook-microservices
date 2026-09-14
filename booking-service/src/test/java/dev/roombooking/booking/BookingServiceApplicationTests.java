@@ -61,6 +61,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willReturn;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
@@ -106,6 +107,7 @@ class BookingServiceApplicationTests {
     @BeforeEach
     void clearTestDatabase() {
         jdbc.update("DELETE FROM outbox_events");
+        jdbc.update("DELETE FROM booking_requests");
         jdbc.update("DELETE FROM bookings");
         given(roomCatalogClient.getActiveRoom(any())).willAnswer(invocation -> {
             UUID roomId = invocation.getArgument(0);
@@ -136,6 +138,83 @@ class BookingServiceApplicationTests {
     }
 
     @Test
+    void replayWithTheSameIdempotencyKeyReturnsTheExistingBooking() throws Exception {
+        String key = UUID.randomUUID().toString();
+        String request = body(ROOM, SLOT);
+
+        var created = postWithKey("alice-token", key, request);
+        var replayed = postWithKey("alice-token", key, request);
+
+        assertThat(created.statusCode()).isEqualTo(201);
+        assertThat(replayed.statusCode()).isEqualTo(200);
+        assertThat(mapper.readTree(replayed.body())).isEqualTo(mapper.readTree(created.body()));
+        assertThat(replayed.headers().firstValue("Location"))
+                .isEqualTo(created.headers().firstValue("Location"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM bookings", Integer.class)).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM booking_requests", Integer.class)).isOne();
+        assertThat(jdbc.queryForObject("SELECT booking_id FROM booking_requests", UUID.class))
+                .isEqualTo(UUID.fromString(mapper.readTree(created.body()).get("id").asText()));
+    }
+
+    @Test
+    void rejectsReuseOfAnIdempotencyKeyForDifferentRequestParameters() throws Exception {
+        String key = UUID.randomUUID().toString();
+        assertThat(postWithKey("alice-token", key, body(ROOM, SLOT)).statusCode()).isEqualTo(201);
+
+        var conflict = postWithKey("alice-token", key,
+                body(ROOM, "2030-01-02T13:00:00Z"));
+
+        assertThat(conflict.statusCode()).isEqualTo(409);
+        assertThat(mapper.readTree(conflict.body()).get("title").asText())
+                .isEqualTo("Idempotency key conflict");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM bookings", Integer.class)).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM booking_requests", Integer.class)).isOne();
+    }
+
+    @Test
+    void scopesIdempotencyKeysToTheAuthenticatedUser() throws Exception {
+        String key = UUID.randomUUID().toString();
+
+        assertThat(postWithKey("alice-token", key, body(ROOM, SLOT)).statusCode()).isEqualTo(201);
+        assertThat(postWithKey("bob-token", key,
+                body(ROOM, "2030-01-02T13:00:00Z")).statusCode()).isEqualTo(201);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM bookings", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM booking_requests", Integer.class)).isEqualTo(2);
+    }
+
+    @Test
+    void simultaneousRetriesWithTheSameKeyCreateExactlyOneBooking() throws Exception {
+        String key = UUID.randomUUID().toString();
+        String request = body(ROOM, SLOT);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (var workers = Executors.newFixedThreadPool(2)) {
+            var first = workers.submit(() -> postAfterStart(ready, start, key, request));
+            var second = workers.submit(() -> postAfterStart(ready, start, key, request));
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            var firstResponse = first.get(15, TimeUnit.SECONDS);
+            var secondResponse = second.get(15, TimeUnit.SECONDS);
+            assertThat(new Integer[]{firstResponse.statusCode(), secondResponse.statusCode()})
+                    .containsExactlyInAnyOrder(201, 200);
+            assertThat(mapper.readTree(firstResponse.body()).get("id").asText())
+                    .isEqualTo(mapper.readTree(secondResponse.body()).get("id").asText());
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM bookings", Integer.class)).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM booking_requests", Integer.class)).isOne();
+    }
+
+    @Test
+    void requiresAValidIdempotencyKey() throws Exception {
+        assertThat(postWithKey("alice-token", null, body(ROOM, SLOT)).statusCode()).isEqualTo(400);
+        assertThat(postWithKey("alice-token", "a".repeat(129), body(ROOM, SLOT)).statusCode()).isEqualTo(400);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM booking_requests", Integer.class)).isZero();
+    }
+
+    @Test
     void requiresBearerTokenAndUserOrAdminRole() throws Exception {
         assertThat(postAs(null, body(ROOM, SLOT)).statusCode()).isEqualTo(401);
         assertThat(postAs("guest-token", body(ROOM, SLOT)).statusCode()).isEqualTo(403);
@@ -145,6 +224,7 @@ class BookingServiceApplicationTests {
     @Test
     void rejectsBookingForARoomThatTheCatalogDoesNotExpose() throws Exception {
         UUID missingRoom = UUID.randomUUID();
+        String key = UUID.randomUUID().toString();
         given(roomCatalogClient.getActiveRoom(missingRoom)).willThrow(FeignException.errorStatus(
                 "RoomCatalogClient#getActiveRoom",
                 Response.builder()
@@ -154,8 +234,14 @@ class BookingServiceApplicationTests {
                                 Map.of(), null, StandardCharsets.UTF_8, null))
                         .build()));
 
-        assertThat(post(body(missingRoom, UUID.randomUUID(), SLOT)).statusCode()).isEqualTo(400);
+        assertThat(postWithKey("alice-token", key, body(missingRoom, SLOT)).statusCode()).isEqualTo(400);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM bookings", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM booking_requests", Integer.class)).isZero();
+
+        willReturn(new RoomCatalogResponse(missingRoom, true))
+                .given(roomCatalogClient).getActiveRoom(missingRoom);
+        assertThat(postWithKey("alice-token", key, body(missingRoom, SLOT)).statusCode()).isEqualTo(201);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM booking_requests", Integer.class)).isOne();
     }
 
     @Test
@@ -485,16 +571,30 @@ class BookingServiceApplicationTests {
         return postWithoutBody("/api/bookings/" + id + "/" + action).statusCode();
     }
 
+    private HttpResponse<String> postAfterStart(CountDownLatch ready, CountDownLatch start,
+                                                String key, String body) throws Exception {
+        ready.countDown();
+        assertThat(start.await(5, TimeUnit.SECONDS)).isTrue();
+        return postWithKey("alice-token", key, body);
+    }
+
     private HttpRequest postRequest(String body) {
         return postRequest(body, "alice-token");
     }
 
     private HttpRequest postRequest(String body, String token) {
+        return postRequest(body, token, UUID.randomUUID().toString());
+    }
+
+    private HttpRequest postRequest(String body, String token, String idempotencyKey) {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/bookings"))
                 .timeout(Duration.ofSeconds(10)).header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body));
         if (token != null) {
             request.header("Authorization", "Bearer " + token);
+        }
+        if (idempotencyKey != null) {
+            request.header("Idempotency-Key", idempotencyKey);
         }
         return request.build();
     }
@@ -505,6 +605,10 @@ class BookingServiceApplicationTests {
 
     private HttpResponse<String> postAs(String token, String body) throws Exception {
         return HTTP.send(postRequest(body, token), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpResponse<String> postWithKey(String token, String idempotencyKey, String body) throws Exception {
+        return HTTP.send(postRequest(body, token, idempotencyKey), HttpResponse.BodyHandlers.ofString());
     }
 
     private HttpResponse<String> postWithoutBody(String path) throws Exception {

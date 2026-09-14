@@ -16,22 +16,31 @@ import java.util.UUID;
 public class BookingService {
     private static final Duration HOLD_DURATION = Duration.ofMinutes(10);
     private final BookingRepository repository;
+    private final BookingRequestRepository requestRepository;
     private final RoomCatalogGateway roomCatalogGateway;
     private final BookingConfirmedEventStore eventStore;
     private final Clock clock;
 
-    public BookingService(BookingRepository repository, RoomCatalogGateway roomCatalogGateway,
+    public BookingService(BookingRepository repository, BookingRequestRepository requestRepository,
+                          RoomCatalogGateway roomCatalogGateway,
                           BookingConfirmedEventStore eventStore, Clock clock) {
         this.repository = repository;
+        this.requestRepository = requestRepository;
         this.roomCatalogGateway = roomCatalogGateway;
         this.eventStore = eventStore;
         this.clock = clock;
     }
 
     @Transactional
-    public BookingResponse create(CreateBookingRequest request, BookingActor actor) {
-        roomCatalogGateway.requireActiveRoom(request.roomId());
+    public BookingCreationResult create(String idempotencyKey, CreateBookingRequest request, BookingActor actor) {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        UUID requestId = UUID.randomUUID();
+        if (requestRepository.claim(requestId, actor.subject(), idempotencyKey,
+                request.roomId(), request.slotStart(), now) == 0) {
+            return replay(idempotencyKey, request, actor, now);
+        }
+
+        roomCatalogGateway.requireActiveRoom(request.roomId());
         if (!request.slotStart().isAfter(now)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "slotStart must be in the future");
         }
@@ -47,7 +56,25 @@ public class BookingService {
         // The unique index decides the winner even when requests reach different instances.
         // Flush here so a conflict leaves this transaction and is handled after rollback.
         repository.saveAndFlush(booking);
-        return BookingResponse.from(booking, now);
+        if (requestRepository.complete(requestId, booking.getId()) != 1) {
+            throw new IllegalStateException("The idempotency request could not be completed");
+        }
+        return new BookingCreationResult(BookingResponse.from(booking, now), true);
+    }
+
+    private BookingCreationResult replay(String idempotencyKey, CreateBookingRequest request,
+                                         BookingActor actor, Instant now) {
+        BookingRequest previous = requestRepository.findByUserIdAndIdempotencyKey(actor.subject(), idempotencyKey)
+                .orElseThrow(() -> new IllegalStateException("The claimed idempotency request is missing"));
+        if (!previous.getRoomId().equals(request.roomId())
+                || !previous.getSlotStart().equals(request.slotStart())) {
+            throw new IdempotencyKeyConflictException();
+        }
+        if (previous.getBookingId() == null) {
+            throw new IllegalStateException("The idempotency request has no booking result");
+        }
+        return new BookingCreationResult(
+                BookingResponse.from(requireBooking(previous.getBookingId()), now), false);
     }
 
     @Transactional(readOnly = true)

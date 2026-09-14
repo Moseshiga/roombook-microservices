@@ -10,6 +10,21 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 
 @RestControllerAdvice
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
+    @ExceptionHandler(jakarta.validation.ConstraintViolationException.class)
+    ProblemDetail handleRequestConstraintViolation(jakarta.validation.ConstraintViolationException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
+                "A request parameter failed validation");
+        problem.setTitle("Invalid request parameter");
+        return problem;
+    }
+
+    @ExceptionHandler(IdempotencyKeyConflictException.class)
+    ProblemDetail handleIdempotencyKeyConflict(IdempotencyKeyConflictException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, exception.getMessage());
+        problem.setTitle("Idempotency key conflict");
+        return problem;
+    }
+
     @ExceptionHandler(DataIntegrityViolationException.class)
     ProblemDetail handleIntegrityViolation(DataIntegrityViolationException exception) {
         for (Throwable cause = exception; cause != null; cause = cause.getCause()) {

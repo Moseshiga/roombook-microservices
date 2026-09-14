@@ -1,13 +1,19 @@
 package dev.roombooking.booking.reservation;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
@@ -15,6 +21,7 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/bookings")
+@Validated
 public class BookingController {
     private final BookingService service;
 
@@ -24,9 +31,18 @@ public class BookingController {
 
     @PostMapping
     public ResponseEntity<BookingResponse> create(@Valid @RequestBody CreateBookingRequest request,
+                                                   @RequestHeader("Idempotency-Key")
+                                                   @NotBlank @Size(max = 128)
+                                                   @Pattern(regexp = "[\\x21-\\x7E]+",
+                                                           message = "must contain visible ASCII characters only")
+                                                   String idempotencyKey,
                                                    JwtAuthenticationToken authentication) {
-        BookingResponse booking = service.create(request, BookingActor.from(authentication));
-        return ResponseEntity.created(URI.create("/api/bookings/" + booking.id())).body(booking);
+        BookingCreationResult result = service.create(idempotencyKey, request, BookingActor.from(authentication));
+        BookingResponse booking = result.booking();
+        HttpStatus status = result.created() ? HttpStatus.CREATED : HttpStatus.OK;
+        return ResponseEntity.status(status)
+                .location(URI.create("/api/bookings/" + booking.id()))
+                .body(booking);
     }
 
     @GetMapping("/{id}")
