@@ -11,6 +11,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,7 +31,7 @@ class OutboxMessagePublisherTests {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     private final OutboxMessagePublisher publisher =
-            new OutboxMessagePublisher(repository, rabbitTemplate, objectMapper, clock);
+            new OutboxMessagePublisher(repository, rabbitTemplate, objectMapper, clock, Optional.empty());
 
     @Test
     void marksEventPublishedOnlyAfterRabbitConfirmsIt() {
@@ -93,6 +94,6 @@ class OutboxMessagePublisherTests {
                 "user-123",
                 Instant.parse("2030-01-02T12:00:00Z"),
                 Instant.parse("2030-01-02T13:00:00Z"));
-        return OutboxEvent.bookingConfirmed(domainEvent, payload);
+        return OutboxEvent.bookingConfirmed(domainEvent, payload, null);
     }
 }

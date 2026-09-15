@@ -18,7 +18,8 @@ contact preferences from profile-service through a deadline-bound gRPC call.
 
 Stack: Java 21, Spring Boot 4.1, Spring MVC, Spring Security OAuth2 Resource Server,
 Bean Validation, JPA, PostgreSQL 17, Flyway, Keycloak, Spring Cloud OpenFeign,
-Eureka, Spring Cloud LoadBalancer, RabbitMQ, Protocol Buffers, gRPC and Actuator.
+Eureka, Spring Cloud LoadBalancer, RabbitMQ, Protocol Buffers, gRPC, Micrometer
+Tracing, Zipkin and Actuator.
 Integration tests use real PostgreSQL and RabbitMQ Testcontainers.
 
 The repository is a Maven multi-module project. Its root POM contains shared Java,
@@ -42,7 +43,7 @@ provided by the checked-in wrapper. From the project directory:
 
 ```powershell
 Copy-Item .env.example .env
-docker compose up -d postgres keycloak rabbitmq
+docker compose up -d postgres keycloak rabbitmq zipkin
 .\mvnw.cmd -DskipTests install
 .\mvnw.cmd -pl discovery-server spring-boot:run
 .\mvnw.cmd -pl room-service spring-boot:run
@@ -54,6 +55,54 @@ docker compose up -d postgres keycloak rabbitmq
 Run these in separate terminals, or start `DiscoveryServerApplication`,
 `RoomServiceApplication`, `ProfileServiceApplication`, `NotificationServiceApplication` and
 `BookingServiceApplication` in IntelliJ in that order.
+
+## Run the full stack in Docker Compose
+
+Copy `.env.example` to `.env` and replace its local-only placeholders, then run:
+
+```powershell
+docker compose up -d --build
+docker compose ps
+```
+
+The multi-stage root `Dockerfile` compiles the Maven reactor and produces a separate
+runtime image for each Java application. The `compose` Spring profile binds listeners to
+`0.0.0.0` and connects to other containers through Docker DNS (`postgres`, `rabbitmq`,
+`discovery-server`, `keycloak`, `zipkin` and `profile-service`). Only Nginx exposes the
+application API at `http://localhost:8080`; the Java service ports stay inside the
+Compose network. Nginx forwards `/api/bookings` to booking-service, `/api/rooms` and
+`/api/admin/rooms` to room-service, and `/api/profile` to profile-service. It forwards
+the caller's bearer token; authorization remains in each Spring service. Keycloak,
+Eureka, RabbitMQ Management and Zipkin retain their host ports `8081`, `8761`, `15672`
+and `9411` for learning and inspection.
+Nginx is only the inbound reverse proxy: the booking-service Feign client still uses
+Eureka and Spring Cloud LoadBalancer for its internal room-service call. The gRPC
+channel is configured directly with Docker DNS. This simple Nginx configuration has
+one upstream container per service and does not read the Eureka registry.
+
+Keycloak's full `KC_HOSTNAME` fixes the token issuer at
+`http://localhost:8081/realms/roombook` for both browser and internal token requests.
+Within a Java container, `localhost` means that container rather than the host. The
+resource servers therefore validate the unchanged token issuer but fetch Keycloak's
+public JWKs through `http://keycloak:8080`. Notification-service also uses the internal
+Keycloak token endpoint for its Client Credentials request; its gRPC channel targets
+`profile-service:9090`. These addresses are defined in the checked-in
+`application-compose.properties` files and are specific to this local Compose setup.
+
+Inspect startup and message processing with `docker compose logs -f booking-service`
+or replace the service name with `notification-service`. Stop the containers with
+`docker compose down`; named PostgreSQL and RabbitMQ volumes are retained so bookings,
+realm configuration and messages survive a normal stop. The first image build can take
+several minutes because Maven downloads dependencies inside the build container.
+
+The short-lived `keycloak-database-init` container runs after PostgreSQL becomes
+healthy. Its `/bin/sh -ec` entrypoint executes the supplied script and stops on an
+error. It checks PostgreSQL's roles and databases before creating the Keycloak role and
+the four service databases, then exits successfully; Keycloak starts only after that
+successful exit. `PGPASSWORD` authenticates its `psql` calls as the local `booking`
+user. Compose's `$$KEYCLOAK_DB_PASSWORD` escapes the dollar sign so the shell inside
+the container, rather than Compose on the host, expands that variable. The container
+is an initialization job, not another long-running database.
 
 The default `local` profiles use separate logical databases in PostgreSQL:
 `bookings_db`, `rooms_db`, `notifications_db` and `profiles_db`, with username
@@ -94,6 +143,11 @@ RabbitMQ accepts AMQP connections on `localhost:5672`. Its management UI is avai
 at [http://localhost:15672](http://localhost:15672); sign in as `roombook` with the
 `RABBITMQ_PASSWORD` value from `.env`. If the variable is absent, Compose and the local
 Spring profiles use the learning-only fallback `roombook_local`.
+
+Zipkin receives completed spans on `http://localhost:9411/api/v2/spans`; its search and
+trace UI is available at [http://localhost:9411](http://localhost:9411). Local profiles
+sample every trace so a single learning request is always visible. The base configuration
+defaults to 10% sampling and can be changed with `TRACING_SAMPLING_PROBABILITY`.
 
 ## API
 
@@ -249,6 +303,41 @@ while waiting on the network. The short deadline bounds this cost. A higher-thro
 production design would narrow the transaction or introduce a notification dispatch
 outbox while preserving idempotency.
 
+## Distributed tracing
+
+The four application services use Micrometer Tracing with the Brave implementation and
+report completed spans to Zipkin. Spring MVC creates incoming HTTP server spans. OpenFeign
+uses `feign-micrometer` to create the booking-service client span and propagate the W3C
+trace context to room-service. Spring AMQP observations are explicitly enabled on the
+booking-service `RabbitTemplate` and the notification-service listener container, while
+Spring gRPC supplies global client and server observation interceptors.
+
+Creating and confirming a booking are two independent HTTP requests, so Zipkin shows
+them as two traces. The creation trace contains booking-service -> OpenFeign ->
+room-service. The confirmation trace starts at `POST /api/bookings/{id}/confirm` and,
+after the outbox delay, continues through RabbitMQ -> notification-service -> gRPC ->
+profile-service. They must not be expected to appear as a single trace merely because
+they operate on the same booking.
+
+The transactional outbox creates a process boundary that ordinary thread-local context
+cannot cross: the HTTP request finishes before a scheduled task reads the event. Therefore
+the outbox row also stores the originating trace ID, span ID and sampling decision. The
+publisher reconstructs that parent context, creates `booking.outbox.publish`, and places
+the span in scope while `RabbitTemplate` sends the message. Spring AMQP then injects the
+trace headers into the AMQP message. The listener extracts them, and its gRPC lookup adds
+client and server spans to the same trace. It is valid for the original HTTP parent to be
+finished before its later outbox child; the timeline shows the intentional scheduling gap.
+Spring also observes each `@Scheduled` publisher invocation as a separate
+`task outboxmessagepublisher.publishpendingevents` trace. When a polling cycle has no
+events to publish, that operational trace correctly contains one span. It is not the
+confirmation trace: search for `booking.outbox.publish` or for the confirmation HTTP span
+to inspect the end-to-end asynchronous chain.
+
+Trace context is diagnostic metadata rather than a delivery guarantee or business key.
+`eventId` still provides message deduplication, and `Idempotency-Key` still makes the HTTP
+command retryable. In production, avoid putting tokens or personal data into span tags,
+choose sampling according to traffic and cost, and configure a durable tracing backend.
+
 ## Concurrency and expiration
 
 The migration creates a partial unique index:
@@ -341,6 +430,8 @@ profile-service datasource overrides are `PROFILE_DB_URL`, `PROFILE_DB_USERNAME`
 `PROFILE_DB_PASSWORD`. `NOTIFICATION_SERVICE_CLIENT_SECRET` configures its Keycloak
 client, `KEYCLOAK_TOKEN_URI` changes the token endpoint, and
 `notification.profile.grpc.deadline` bounds each lookup.
+`ZIPKIN_ENDPOINT` changes the Zipkin ingestion endpoint and
+`TRACING_SAMPLING_PROBABILITY` accepts a value from `0.0` to `1.0`.
 Compose does not automatically pass environment variables to an app launched separately
 from IntelliJ. For deployment, explicitly select another
 `SPRING_PROFILES_ACTIVE` value and provide `SPRING_DATASOURCE_URL`,
@@ -361,3 +452,5 @@ from IntelliJ. For deployment, explicitly select another
 - [Spring Boot gRPC](https://docs.spring.io/spring-boot/reference/io/grpc.html)
 - [gRPC Java basics](https://grpc.io/docs/languages/java/basics/)
 - [gRPC deadlines](https://grpc.io/docs/guides/deadlines/)
+- [Spring Boot tracing](https://docs.spring.io/spring-boot/reference/actuator/tracing.html)
+- [Spring AMQP observations](https://docs.spring.io/spring-amqp/reference/amqp/receiving-messages/micrometer-observation.html)

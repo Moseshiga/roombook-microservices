@@ -1,5 +1,8 @@
 package dev.roombooking.booking.messaging;
 
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.TraceContext;
+import io.micrometer.tracing.Tracer;
 import net.javacrumbs.shedlock.core.LockAssert;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
@@ -16,6 +19,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 @Component
@@ -31,13 +35,15 @@ class OutboxMessagePublisher {
     private final RabbitTemplate rabbitTemplate;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final Optional<Tracer> tracer;
 
     OutboxMessagePublisher(OutboxEventRepository repository, RabbitTemplate rabbitTemplate,
-                           ObjectMapper objectMapper, Clock clock) {
+                           ObjectMapper objectMapper, Clock clock, Optional<Tracer> tracer) {
         this.repository = repository;
         this.rabbitTemplate = rabbitTemplate;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.tracer = tracer;
     }
 
     @Scheduled(fixedDelayString = "${booking.outbox.publisher.interval:PT5S}")
@@ -57,6 +63,17 @@ class OutboxMessagePublisher {
     }
 
     private void publish(OutboxEvent event) {
+        Span span = startPublishSpan(event);
+        try (Tracer.SpanInScope ignored = putInScope(span)) {
+            publishInScope(event, span);
+        } finally {
+            if (span != null) {
+                span.end();
+            }
+        }
+    }
+
+    private void publishInScope(OutboxEvent event, Span span) {
         try {
             BookingConfirmedMessage message = deserialize(event);
             CorrelationData correlation = new CorrelationData(event.id().toString());
@@ -83,11 +100,39 @@ class OutboxMessagePublisher {
             }
             repository.markPublished(event.id(), clock.instant());
         } catch (Exception exception) {
+            if (span != null) {
+                span.error(exception);
+            }
             Instant nextAttemptAt = clock.instant().plus(retryDelay(event.attempts() + 1));
             repository.recordFailure(event.id(), nextAttemptAt, conciseMessage(exception));
             log.warn("Could not publish outbox event {}; next attempt at {}",
                     event.id(), nextAttemptAt, exception);
         }
+    }
+
+    private Span startPublishSpan(OutboxEvent event) {
+        if (event.traceId() == null || event.traceSpanId() == null) {
+            return null;
+        }
+        return tracer.map(value -> {
+            TraceContext parent = value.traceContextBuilder()
+                    .traceId(event.traceId())
+                    .spanId(event.traceSpanId())
+                    .sampled(event.traceSampled())
+                    .build();
+            return value.spanBuilder()
+                    .setParent(parent)
+                    .name("booking.outbox.publish")
+                    .tag("messaging.message.id", event.id().toString())
+                    .start();
+        }).orElse(null);
+    }
+
+    private Tracer.SpanInScope putInScope(Span span) {
+        if (span == null) {
+            return () -> { };
+        }
+        return tracer.orElseThrow().withSpan(span);
     }
 
     private BookingConfirmedMessage deserialize(OutboxEvent event) {

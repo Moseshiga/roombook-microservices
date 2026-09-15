@@ -1,0 +1,12 @@
+.git
+.idea
+.env
+**/target
+**/build
+**/*.iml
+**/*.md
+infra
+compose.yaml
+.mvn
+mvnw
+mvnw.cmd

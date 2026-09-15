@@ -1,6 +1,7 @@
 package dev.roombooking.booking.messaging;
 
 import dev.roombooking.booking.reservation.BookingConfirmedEvent;
+import io.micrometer.tracing.TraceContext;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -33,12 +34,17 @@ class OutboxEvent {
     @Column(nullable = false)
     private Instant nextAttemptAt;
     private String lastError;
+    @Column(length = 32)
+    private String traceId;
+    @Column(length = 16)
+    private String traceSpanId;
+    private Boolean traceSampled;
 
     protected OutboxEvent() {
     }
 
     private OutboxEvent(UUID id, String aggregateType, UUID aggregateId, String eventType,
-                        String payload, Instant occurredAt) {
+                        String payload, Instant occurredAt, TraceContext traceContext) {
         this.id = id;
         this.aggregateType = aggregateType;
         this.aggregateId = aggregateId;
@@ -47,16 +53,23 @@ class OutboxEvent {
         this.occurredAt = occurredAt;
         this.attempts = 0;
         this.nextAttemptAt = occurredAt;
+        if (traceContext != null) {
+            this.traceId = traceContext.traceId();
+            this.traceSpanId = traceContext.spanId();
+            this.traceSampled = traceContext.sampled();
+        }
     }
 
-    static OutboxEvent bookingConfirmed(BookingConfirmedEvent event, String payload) {
+    static OutboxEvent bookingConfirmed(BookingConfirmedEvent event, String payload,
+                                        TraceContext traceContext) {
         return new OutboxEvent(
                 event.eventId(),
                 "BOOKING",
                 event.bookingId(),
                 BookingMessagingTopology.BOOKING_CONFIRMED_ROUTING_KEY,
                 payload,
-                event.occurredAt());
+                event.occurredAt(),
+                traceContext);
     }
 
     UUID id() {
@@ -73,5 +86,17 @@ class OutboxEvent {
 
     int attempts() {
         return attempts;
+    }
+
+    String traceId() {
+        return traceId;
+    }
+
+    String traceSpanId() {
+        return traceSpanId;
+    }
+
+    Boolean traceSampled() {
+        return traceSampled;
     }
 }

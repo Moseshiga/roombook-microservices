@@ -1,5 +1,13 @@
 name: roombook
 
+x-java-build: &java-build
+  context: .
+  dockerfile: Dockerfile
+
+x-java-environment: &java-environment
+  SPRING_PROFILES_ACTIVE: compose
+  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:+ExitOnOutOfMemoryError"
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -59,7 +67,7 @@ services:
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in .env}
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:?Set KEYCLOAK_ADMIN_USERNAME in .env}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in .env}
-      KC_HOSTNAME: localhost
+      KC_HOSTNAME: http://localhost:8081
       KC_HEALTH_ENABLED: "true"
       ROOMBOOK_ALICE_PASSWORD: ${ROOMBOOK_ALICE_PASSWORD:?Set ROOMBOOK_ALICE_PASSWORD in .env}
       ROOMBOOK_ADMIN_PASSWORD: ${ROOMBOOK_ADMIN_PASSWORD:?Set ROOMBOOK_ADMIN_PASSWORD in .env}
@@ -89,6 +97,140 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+  zipkin:
+    image: openzipkin/zipkin:3.6.1
+    ports:
+      - "127.0.0.1:9411:9411"
+    mem_limit: 512m
+
+  discovery-server:
+    image: roombook/discovery-server:local
+    build:
+      <<: *java-build
+      args:
+        MODULE: discovery-server
+    environment:
+      <<: *java-environment
+    ports:
+      - "127.0.0.1:8761:8761"
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8761/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  room-service:
+    image: roombook/room-service:local
+    build:
+      <<: *java-build
+      args:
+        MODULE: room-service
+    depends_on:
+      keycloak:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+    environment:
+      <<: *java-environment
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8082/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 40s
+
+  profile-service:
+    image: roombook/profile-service:local
+    build:
+      <<: *java-build
+      args:
+        MODULE: profile-service
+    depends_on:
+      keycloak:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+    environment:
+      <<: *java-environment
+    mem_limit: 640m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8084/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 45s
+
+  notification-service:
+    image: roombook/notification-service:local
+    build:
+      <<: *java-build
+      args:
+        MODULE: notification-service
+    depends_on:
+      profile-service:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      <<: *java-environment
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-roombook_local}
+      NOTIFICATION_SERVICE_CLIENT_SECRET: ${NOTIFICATION_SERVICE_CLIENT_SECRET:?Set NOTIFICATION_SERVICE_CLIENT_SECRET in .env}
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8083/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 45s
+
+  booking-service:
+    image: roombook/booking-service:local
+    build:
+      <<: *java-build
+      args:
+        MODULE: booking-service
+    depends_on:
+      room-service:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    environment:
+      <<: *java-environment
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-roombook_local}
+    mem_limit: 640m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/actuator/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 45s
+
+  nginx:
+    image: nginx:1.31.5-alpine3.24
+    depends_on:
+      booking-service:
+        condition: service_healthy
+      room-service:
+        condition: service_healthy
+      profile-service:
+        condition: service_healthy
+    volumes:
+      - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    mem_limit: 96m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
 
 volumes:
   booking-postgres-data:

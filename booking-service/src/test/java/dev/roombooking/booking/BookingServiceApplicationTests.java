@@ -269,6 +269,11 @@ class BookingServiceApplicationTests {
         assertThat(jdbc.queryForObject("SELECT event_type FROM outbox_events", String.class))
                 .isEqualTo("booking.confirmed.v1");
         assertThat(jdbc.queryForObject("SELECT published_at IS NULL FROM outbox_events", Boolean.class)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT trace_id FROM outbox_events", String.class))
+                .matches("[0-9a-f]{32}");
+        assertThat(jdbc.queryForObject("SELECT trace_span_id FROM outbox_events", String.class))
+                .matches("[0-9a-f]{16}");
+        assertThat(jdbc.queryForObject("SELECT trace_sampled IS NOT NULL FROM outbox_events", Boolean.class)).isTrue();
         JsonNode payload = mapper.readTree(
                 jdbc.queryForObject("SELECT payload::text FROM outbox_events", String.class));
         assertThat(payload.get("bookingId").asText()).isEqualTo(id.toString());
