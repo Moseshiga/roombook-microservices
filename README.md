@@ -209,6 +209,13 @@ offset (`Z` is UTC). Slots start on whole UTC hours and last exactly one hour.
   USER or ADMIN returns `403`.
 - A requested room must exist and be active in room-service; otherwise creation returns
   `400`. booking-service relays the caller's Bearer token to this internal request.
+- The room lookup has a one-second connection timeout and a 1.5-second response timeout.
+  Transient network and `5xx` failures receive one retry because the lookup is a safe
+  `GET`. Persistent failures return `503` instead of pretending that a room is available.
+- A `roomCatalog` Resilience4j circuit breaker opens when at least half of the last
+  ten logical lookups fail (after at least five calls). While open it fails fast for ten
+  seconds, then permits three probes in `HALF_OPEN` state. A missing room (`404`) is a
+  normal business result and neither triggers a retry nor counts as a service failure.
 - The owner may read, confirm and cancel their booking. An ADMIN may perform these
   operations on any booking; a different USER receives `403`.
 - An occupied slot returns `409` with an `application/problem+json` response.
@@ -447,6 +454,10 @@ client, `KEYCLOAK_TOKEN_URI` changes the token endpoint, and
 `notification.profile.grpc.deadline` bounds each lookup.
 `ZIPKIN_ENDPOINT` changes the Zipkin ingestion endpoint and
 `TRACING_SAMPLING_PROBABILITY` accepts a value from `0.0` to `1.0`.
+`ROOM_SERVICE_CONNECT_TIMEOUT` and `ROOM_SERVICE_READ_TIMEOUT` configure the Feign
+timeouts in milliseconds. An ADMIN token can inspect Resilience4j through Nginx at
+`/actuator/booking/circuitbreakers`, `/actuator/booking/retries` and the corresponding
+`...events` and `/actuator/booking/metrics` endpoints.
 Compose does not automatically pass environment variables to an app launched separately
 from IntelliJ. For deployment, explicitly select another
 `SPRING_PROFILES_ACTIVE` value and provide `SPRING_DATASOURCE_URL`,
@@ -461,6 +472,7 @@ from IntelliJ. For deployment, explicitly select another
 - [Keycloak server administration guide](https://www.keycloak.org/docs/latest/server_admin/)
 - [Spring Security OAuth2 Resource Server](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html)
 - [Spring Cloud OpenFeign](https://docs.spring.io/spring-cloud-openfeign/reference/)
+- [Spring Cloud Circuit Breaker](https://docs.spring.io/spring-cloud-circuitbreaker/reference/)
 - [Spring Cloud Netflix Eureka](https://docs.spring.io/spring-cloud-netflix/reference/)
 - [Spring Boot AMQP](https://docs.spring.io/spring-boot/reference/messaging/amqp.html)
 - [Spring transaction-bound events](https://docs.spring.io/spring-framework/reference/data-access/transaction/event.html)

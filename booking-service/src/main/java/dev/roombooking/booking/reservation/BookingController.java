@@ -46,7 +46,8 @@ public class BookingController {
             @ApiResponse(responseCode = "400", description = "The request or idempotency key is invalid"),
             @ApiResponse(responseCode = "401", description = "The access token is missing or invalid"),
             @ApiResponse(responseCode = "403", description = "The caller lacks a required realm role"),
-            @ApiResponse(responseCode = "409", description = "The slot is unavailable or the key was reused for another request")
+            @ApiResponse(responseCode = "409", description = "The slot is unavailable or the key was reused for another request"),
+            @ApiResponse(responseCode = "503", description = "The room catalog is temporarily unavailable")
     })
     public ResponseEntity<BookingResponse> create(@Valid @RequestBody CreateBookingRequest request,
                                                    @Parameter(
