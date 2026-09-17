@@ -1,5 +1,10 @@
 package dev.roombooking.booking.reservation;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
@@ -22,6 +27,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/bookings")
 @Validated
+@Tag(name = "Bookings", description = "One-hour room holds owned by the authenticated user")
 public class BookingController {
     private final BookingService service;
 
@@ -30,12 +36,28 @@ public class BookingController {
     }
 
     @PostMapping
+    @Operation(
+            summary = "Create a booking hold",
+            description = "Creates a temporary one-hour hold. Repeating the same request with the same "
+                    + "Idempotency-Key returns the original result.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "201", description = "A new hold was created"),
+            @ApiResponse(responseCode = "200", description = "An idempotent replay returned the existing hold"),
+            @ApiResponse(responseCode = "400", description = "The request or idempotency key is invalid"),
+            @ApiResponse(responseCode = "401", description = "The access token is missing or invalid"),
+            @ApiResponse(responseCode = "403", description = "The caller lacks a required realm role"),
+            @ApiResponse(responseCode = "409", description = "The slot is unavailable or the key was reused for another request")
+    })
     public ResponseEntity<BookingResponse> create(@Valid @RequestBody CreateBookingRequest request,
+                                                   @Parameter(
+                                                           description = "Client-generated key reused for safe retries of this request",
+                                                           example = "f3ff45b4-10d8-4c18-9730-d11ad78a29d6")
                                                    @RequestHeader("Idempotency-Key")
                                                    @NotBlank @Size(max = 128)
                                                    @Pattern(regexp = "[\\x21-\\x7E]+",
                                                            message = "must contain visible ASCII characters only")
                                                    String idempotencyKey,
+                                                   @Parameter(hidden = true)
                                                    JwtAuthenticationToken authentication) {
         BookingCreationResult result = service.create(idempotencyKey, request, BookingActor.from(authentication));
         BookingResponse booking = result.booking();
@@ -46,17 +68,23 @@ public class BookingController {
     }
 
     @GetMapping("/{id}")
-    public BookingResponse get(@PathVariable UUID id, JwtAuthenticationToken authentication) {
+    @Operation(summary = "Get a booking", description = "Returns a booking visible to its owner or an administrator.")
+    public BookingResponse get(@PathVariable UUID id,
+                               @Parameter(hidden = true) JwtAuthenticationToken authentication) {
         return service.get(id, BookingActor.from(authentication));
     }
 
     @PostMapping("/{id}/confirm")
-    public BookingResponse confirm(@PathVariable UUID id, JwtAuthenticationToken authentication) {
+    @Operation(summary = "Confirm a booking", description = "Confirms a non-expired PENDING hold.")
+    public BookingResponse confirm(@PathVariable UUID id,
+                                   @Parameter(hidden = true) JwtAuthenticationToken authentication) {
         return service.confirm(id, BookingActor.from(authentication));
     }
 
     @PostMapping("/{id}/cancel")
-    public BookingResponse cancel(@PathVariable UUID id, JwtAuthenticationToken authentication) {
+    @Operation(summary = "Cancel a booking", description = "Cancels a non-expired PENDING hold.")
+    public BookingResponse cancel(@PathVariable UUID id,
+                                  @Parameter(hidden = true) JwtAuthenticationToken authentication) {
         return service.cancel(id, BookingActor.from(authentication));
     }
 }

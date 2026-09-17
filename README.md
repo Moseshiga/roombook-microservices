@@ -19,7 +19,7 @@ contact preferences from profile-service through a deadline-bound gRPC call.
 Stack: Java 21, Spring Boot 4.1, Spring MVC, Spring Security OAuth2 Resource Server,
 Bean Validation, JPA, PostgreSQL 17, Flyway, Keycloak, Spring Cloud OpenFeign,
 Eureka, Spring Cloud LoadBalancer, RabbitMQ, Protocol Buffers, gRPC, Micrometer
-Tracing, Zipkin and Actuator.
+Tracing, Zipkin, Actuator, OpenAPI 3 and Swagger UI.
 Integration tests use real PostgreSQL and RabbitMQ Testcontainers.
 
 The repository is a Maven multi-module project. Its root POM contains shared Java,
@@ -79,6 +79,15 @@ Nginx is only the inbound reverse proxy: the booking-service Feign client still 
 Eureka and Spring Cloud LoadBalancer for its internal room-service call. The gRPC
 channel is configured directly with Docker DNS. This simple Nginx configuration has
 one upstream container per service and does not read the Eureka registry.
+
+Open [Swagger UI](http://localhost:8080/swagger-ui.html) after the full Compose stack is
+healthy. Booking-service hosts the UI; Nginx exposes the independently generated
+Booking, Room and Profile OpenAPI documents through one same-origin selector. Click
+**Authorize** and paste only a Keycloak access token; Swagger UI adds the `Bearer`
+prefix. The OpenAPI JSON documents are also available at `/v3/api-docs/booking`,
+`/v3/api-docs/rooms` and `/v3/api-docs/profile` through Nginx. API documentation is
+public in this learning environment, while the documented business operations still
+enforce their Spring Security roles.
 
 Keycloak's full `KC_HOSTNAME` fixes the token issuer at
 `http://localhost:8081/realms/roombook` for both browser and internal token requests.
@@ -150,6 +159,12 @@ sample every trace so a single learning request is always visible. The base conf
 defaults to 10% sampling and can be changed with `TRACING_SAMPLING_PROBABILITY`.
 
 ## API
+
+Each HTTP service generates its OpenAPI 3 document from Spring MVC mappings, Bean
+Validation constraints and small operation annotations. When services run directly
+from IntelliJ, their individual Swagger UIs are available on their own ports at
+`/swagger-ui.html` (booking `8080`, room `8082`, profile `8084`). When the complete
+Compose stack runs, use the aggregated Nginx URL documented above.
 
 | Method | Path | Result |
 | --- | --- | --- |

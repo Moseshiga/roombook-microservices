@@ -1,5 +1,9 @@
 package dev.roombooking.room.catalog;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -18,6 +22,7 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/api")
+@Tag(name = "Rooms", description = "Room catalog and administrator management")
 class RoomController {
     private final RoomCatalogService roomCatalogService;
 
@@ -26,16 +31,24 @@ class RoomController {
     }
 
     @GetMapping("/rooms")
+    @Operation(summary = "List active rooms")
     List<RoomResponse> listActive() {
         return roomCatalogService.listActive();
     }
 
     @GetMapping("/rooms/{roomId}")
+    @Operation(summary = "Get an active room")
     RoomResponse getActive(@PathVariable UUID roomId) {
         return roomCatalogService.getActive(roomId);
     }
 
     @PostMapping("/admin/rooms")
+    @Operation(summary = "Create a room", description = "Requires the ADMIN realm role.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "201", description = "The room was created"),
+            @ApiResponse(responseCode = "400", description = "The room definition is invalid"),
+            @ApiResponse(responseCode = "403", description = "The caller lacks the ADMIN role")
+    })
     ResponseEntity<RoomResponse> create(@Valid @RequestBody CreateRoomRequest request) {
         RoomResponse response = roomCatalogService.create(request);
         URI location = ServletUriComponentsBuilder.fromCurrentContextPath()
@@ -46,6 +59,7 @@ class RoomController {
     }
 
     @PutMapping("/admin/rooms/{roomId}")
+    @Operation(summary = "Replace a room", description = "Updates room details and active status. Requires ADMIN.")
     RoomResponse update(@PathVariable UUID roomId, @Valid @RequestBody UpdateRoomRequest request) {
         return roomCatalogService.update(roomId, request);
     }

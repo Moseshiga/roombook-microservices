@@ -32,6 +32,7 @@ class HttpSecurityConfiguration {
                 .authorizeHttpRequests(authorize -> authorize
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/actuator/health").permitAll()
+                        .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .requestMatchers("/api/profile/**").hasAnyRole("USER", "ADMIN")
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(oauth2 -> oauth2
