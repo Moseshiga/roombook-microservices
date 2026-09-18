@@ -50,7 +50,7 @@ class RoomCatalogGatewayTests {
                 .minimumNumberOfCalls(2)
                 .failureRateThreshold(50)
                 .waitDurationInOpenState(Duration.ofMinutes(1))
-                .recordException(transientFailure)
+                .ignoreException(new RoomCatalogClientErrorPredicate())
                 .build();
 
         RetryRegistry retryRegistry = RetryRegistry.ofDefaults();
@@ -80,6 +80,7 @@ class RoomCatalogGatewayTests {
 
         verify(client).getActiveRoom(ROOM_ID);
         assertThat(circuitBreaker.getMetrics().getNumberOfFailedCalls()).isZero();
+        assertThat(circuitBreaker.getMetrics().getNumberOfBufferedCalls()).isZero();
     }
 
     @Test

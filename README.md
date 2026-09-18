@@ -215,7 +215,7 @@ offset (`Z` is UTC). Slots start on whole UTC hours and last exactly one hour.
 - A `roomCatalog` Resilience4j circuit breaker opens when at least half of the last
   ten logical lookups fail (after at least five calls). While open it fails fast for ten
   seconds, then permits three probes in `HALF_OPEN` state. A missing room (`404`) is a
-  normal business result and neither triggers a retry nor counts as a service failure.
+  normal business result and neither triggers a retry nor enters the circuit-breaker window.
 - The owner may read, confirm and cancel their booking. An ADMIN may perform these
   operations on any booking; a different USER receives `403`.
 - An occupied slot returns `409` with an `application/problem+json` response.
