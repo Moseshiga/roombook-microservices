@@ -1,5 +1,7 @@
 # RoomBook Microservices
 
+[![CI](https://github.com/Moseshiga/roombook-microservices/actions/workflows/ci.yml/badge.svg)](https://github.com/Moseshiga/roombook-microservices/actions/workflows/ci.yml)
+
 A learning project focused on reliable reservations and microservice communication.
 
 ## Current stage
@@ -421,6 +423,14 @@ mapping and deadlines. profile-service tests start a real Netty gRPC server and 
 the `UNAUTHENTICATED`, `PERMISSION_DENIED`, `NOT_FOUND` and successful authorization
 paths. Tests run sequentially.
 
+## Continuous integration
+
+GitHub Actions runs the same Maven `verify` command on every push and pull request.
+The workflow uses Java 21 and a Linux runner with Docker. Testcontainers starts its
+own temporary PostgreSQL and RabbitMQ containers, so CI does not need `.env`, the
+local Compose stack or application secrets. The build result is visible in the
+repository's **Actions** tab.
+
 ## Stop
 
 Stop the application in IntelliJ or with Ctrl+C, then:
@@ -432,13 +442,14 @@ docker compose stop
 Database files remain in a named volume. Flyway applies migrations on application
 startup; Hibernate uses `ddl-auto=validate` and does not modify the schema.
 
-## Scope and next steps
+## Scope
 
 Room catalog is reached through OpenFeign and Eureka; profile data is reached through
 protobuf/gRPC; booking events cross RabbitMQ. This deliberately demonstrates three
-communication styles with concrete reasons for each. The next infrastructure stages
-are observability, an edge proxy and container orchestration. Do not expose this
-learning-stage API publicly.
+communication styles with concrete reasons for each. Micrometer Tracing and Zipkin
+provide distributed traces, while Nginx is the local edge entry point. A browser
+client for the existing Keycloak Authorization Code + PKCE configuration could be a
+separate extension. Do not expose this learning-stage API publicly.
 
 ## Configuration
 
